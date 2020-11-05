@@ -184,6 +184,9 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         if self.input.param('setup_infra', True):
             if "bucket_spec" not in self.input.test_params:
                 self.input.test_params.update({"bucket_spec": "analytics.default"})
+        else:
+            if "default_bucket" not in self.input.test_params:
+                self.input.test_params.update({"default_bucket": False})
         super(CBASDatasetsAndCollections, self).setUp()
         self.log.info("================================================================")
         self.log.info("SETUP has finished")
@@ -1212,7 +1215,6 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         
     
     def test_docs_deleted_in_dataset_once_MaxTTL_reached(self):
-        self.bucket_util.delete_all_buckets()
         buckets_spec = self.bucket_util.get_bucket_template_from_package(
             "analytics.single_bucket")
         
@@ -1262,7 +1264,157 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         if not self.cbas_util.validate_cbas_dataset_items_count(
             Dataset.format_name(self.cbas_dataset_name), 0):
             self.fail("Documents still present even after maxTTL is reached")
+    
+    def verify_index_used(self, statement, index_used=False, index_name=None):
+        statement = 'EXPLAIN %s'%statement
+        status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+            statement)
+        if status == 'success':
+            if not errors:
+                if index_used:
+                    if ("index-search" in str(results)) and ("data-scan" not in str(results)):
+                        self.log.info(
+                            "INDEX-SEARCH is found in EXPLAIN hence indexed data will be scanned to serve %s"%statement)
+                        if index_name:
+                            if index_name in str(results):
+                                return True
+                            else:
+                                return False
+                        return True
+                    else:
+                        return False
+                else:
+                    if ("index-search" not in str(results)) and ("data-scan" in str(results)):
+                        self.log.info("DATA-SCAN is found in EXPLAIN hence index is not used to serve %s"%statement)
+                        return True
+                    else:
+                        return False
+            else:
+                return False
+        else:
+            return False
+    
+    def test_create_query_drop_on_multipart_name_secondary_index(self):
+        """
+        This testcase verifies secondary index creation, querying using index and 
+        dropping of index.
+        Supported Test params -
+        :testparam analytics_index boolean, whether to use create/drop index or 
+        create/drop analytics index statements to create index
+        """
+        self.log.info("Test started")
         
+        if not self.bucket_util.load_sample_bucket(self.sample_bucket):
+            self.fail("Error while loading {0} bucket in remote cluster".format(self.sample_bucket.name))
+        
+        dataset_obj = Dataset(
+            bucket_util=self.bucket_util, cbas_util=self.cbas_util,
+            consider_default_KV_scope=True, consider_default_KV_collection=True,
+            dataset_name_cardinality=3, bucket_cardinality=1, random_dataset_name=True)
+        
+        dataset_obj.setup_dataset(
+            validate_metadata=True, validate_doc_count=False, create_dataverse=True)
+        
+        index_fields = ""
+        for index_field in self.index_fields:
+            index_fields += index_field + ","
+        index_fields = index_fields[:-1]
+        
+        if self.input.param('analytics_index', False):
+            create_idx_statement = "create analytics index {0} on {1}({2});".format(
+                self.index_name, dataset_obj.full_dataset_name, index_fields)
+        else:
+            create_idx_statement = "create index {0} on {1}({2});".format(
+                self.index_name, dataset_obj.full_dataset_name, index_fields)
+        
+        status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+            create_idx_statement)
+        
+        if status != "success" or not self.cbas_util.verify_index_created(
+            self.index_name, self.index_fields, dataset_obj.name)[0]:
+            self.fail("Create Index query failed")
+        
+        if self.input.param('verify_index_on_synonym', False):
+            self.log.info("Creating synonym")
+            if not dataset_obj.setup_synonym(
+                new_synonym_name=True, synonym_dataverse=dataset_obj.dataverse,
+                validate_metadata=True, validate_doc_count=False, if_not_exists=False):
+                self.fail("Error while creating synonym")
+            
+            statement = 'SELECT VALUE v FROM '+ Dataset.format_name(
+                    dataset_obj.dataverse, dataset_obj.synonym_name) + ' v WHERE v.geo.lat > 1 AND v.abv > 2'
+        
+        else:
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE v.geo.lat > 1 AND v.abv > 2'
+        
+        if not self.verify_index_used(statement, True, self.index_name):
+            self.fail("Index was not used while querying the dataset")
+        
+        if self.input.param('analytics_index', False):
+            drop_idx_statement = "drop analytics index {0}.{1};".format(
+                dataset_obj.full_dataset_name, self.index_name)
+        else:
+            drop_idx_statement = "drop index {0}.{1};".format(
+                dataset_obj.full_dataset_name, self.index_name)
+        
+        status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+            drop_idx_statement)
+        if status != "success":
+            self.fail("Drop index query failed")
+        
+        self.log.info("Test finished")
+    
+    
+    def test_create_secondary_index_on_synonym(self):
+        
+        self.log.info("Test started")
+        
+        if not self.bucket_util.load_sample_bucket(self.sample_bucket):
+            self.fail("Error while loading {0} bucket in remote cluster".format(self.sample_bucket.name))
+        
+        dataset_obj = Dataset(
+            bucket_util=self.bucket_util, cbas_util=self.cbas_util,
+            consider_default_KV_scope=True, consider_default_KV_collection=True,
+            dataset_name_cardinality=3, bucket_cardinality=1, random_dataset_name=True)
+        
+        dataset_obj.setup_dataset(
+            validate_metadata=True, validate_doc_count=False, create_dataverse=True)
+        
+        self.log.info("Creating synonym")
+        if not dataset_obj.setup_synonym(
+            new_synonym_name=True, synonym_dataverse=dataset_obj.dataverse,
+            validate_metadata=True, validate_doc_count=False, if_not_exists=False):
+            self.fail("Error while creating synonym")
+        
+        index_fields = ""
+        for index_field in self.index_fields:
+            index_fields += index_field + ","
+        index_fields = index_fields[:-1]
+        
+        if self.input.param('analytics_index', False):
+            create_idx_statement = "create analytics index {0} on {1}({2});".format(
+                self.index_name, Dataset.format_name(
+                    dataset_obj.dataverse, dataset_obj.synonym_name),
+                index_fields)
+        else:
+            create_idx_statement = "create index {0} on {1}({2});".format(
+                self.index_name, Dataset.format_name(
+                    dataset_obj.dataverse, dataset_obj.synonym_name),
+                index_fields)
+        
+        status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+            create_idx_statement)
+        
+        expected_error = "Cannot find dataset with name {0} in dataverse {1}".format(
+            Dataset.format_name_for_error(True,dataset_obj.synonym_name),
+            Dataset.format_name_for_error(True,dataset_obj.dataverse))
+        
+        if not self.cbas_util.validate_error_in_response(status, errors, 
+                                                         expected_error):
+            self.fail("Index creation on synonym was successfull")
+                    
+        self.log.info("Test finished")
+
     
     def test_dataset_after_deleting_and_recreating_KV_collection(self):
         self.log.info("Test started")

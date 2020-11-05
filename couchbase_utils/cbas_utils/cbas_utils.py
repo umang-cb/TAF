@@ -405,7 +405,7 @@ class CbasUtil:
                                  where_field=None, where_value = None,
                                  validate_error_msg=False, username = None,
                                  password = None, expected_error=None, dataverse=None, compress_dataset=False,
-                                 link_name="Local", timeout=120, analytics_timeout=120):
+                                 link_name=None, timeout=120, analytics_timeout=120):
         """
         Creates a shadow dataset on a CBAS bucket
         """
@@ -416,7 +416,10 @@ class CbasUtil:
         if compress_dataset:
             cmd_create_dataset = cmd_create_dataset + "with {'storage-block-compression': {'scheme': 'snappy'}} "
 
-        cmd_create_dataset = cmd_create_dataset + "on {0} at {1} ".format(cbas_bucket_name, link_name)
+        cmd_create_dataset = cmd_create_dataset + "on {0} ".format(cbas_bucket_name)
+        
+        if link_name:
+            cmd_create_dataset += "at {1} ".format(link_name)
 
         if where_field and where_value:
             cmd_create_dataset = cmd_create_dataset + "WHERE `{0}`=\"{1}\";".format(where_field, where_value)
@@ -2330,7 +2333,8 @@ class Dataset:
                       validate_error=False, error_msg=None,
                       compress_dataset=False,
                       username=None, password=None,
-                      timeout=120, analytics_timeout=120): 
+                      timeout=120, analytics_timeout=120,
+                      link_name=None): 
         
         if self.dataverse and self.dataverse != "Default" and create_dataverse:
             self.log.info("Creating Dataverse {0}".format(self.dataverse))
@@ -2348,7 +2352,7 @@ class Dataset:
                 expected_error=error_msg,
                 username=username, password=password,
                 compress_dataset=compress_dataset,
-                timeout=timeout, analytics_timeout=analytics_timeout):
+                timeout=timeout, analytics_timeout=analytics_timeout,link_name=link_name):
                 self.log.error("Error creating analytics collection {0}".format(self.full_dataset_name))
                 return False
         elif dataset_creation_method == "cbas_dataset":
@@ -2360,7 +2364,8 @@ class Dataset:
                 expected_error=error_msg,
                 username=username, password=password,
                 compress_dataset=compress_dataset,
-                timeout=timeout, analytics_timeout=analytics_timeout):
+                timeout=timeout, analytics_timeout=analytics_timeout,
+                link_name=link_name):
                 self.log.error("Error creating dataset {0}".format(self.full_dataset_name))
                 return False
         elif dataset_creation_method == "enable_cbas_from_kv":
