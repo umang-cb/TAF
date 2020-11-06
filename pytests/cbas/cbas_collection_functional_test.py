@@ -1364,7 +1364,6 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         
         self.log.info("Test finished")
     
-    
     def test_create_secondary_index_on_synonym(self):
         
         self.log.info("Test started")
@@ -1414,8 +1413,327 @@ class CBASDatasetsAndCollections(CBASBaseTest):
             self.fail("Index creation on synonym was successfull")
                     
         self.log.info("Test finished")
-
-    
+   
     def test_dataset_after_deleting_and_recreating_KV_collection(self):
         self.log.info("Test started")
+        
+        dataset_obj = Dataset(
+            bucket_util=self.bucket_util,
+            cbas_util=self.cbas_util,
+            consider_default_KV_scope=True, 
+            consider_default_KV_collection=True,
+            dataset_name_cardinality=int(self.input.param('cardinality', 1)),
+            bucket_cardinality=int(self.input.param('bucket_cardinality', 3)),
+            random_dataset_name=True
+            )
+        
+        dataset_obj.setup_dataset(
+            dataset_creation_method=self.input.param('dataset_creation_method', "cbas_dataset"),
+            validate_metadata=True, validate_doc_count=True, create_dataverse=True)
+        
+        index_fields = ""
+        for index_field in self.index_fields:
+            index_fields += index_field + ","
+        index_fields = index_fields[:-1]
+        
+        if self.input.param('analytics_index', False):
+            create_idx_statement = "create analytics index {0} on {1}({2});".format(
+                self.index_name, dataset_obj.full_dataset_name, index_fields)
+        else:
+            create_idx_statement = "create index {0} on {1}({2});".format(
+                self.index_name, dataset_obj.full_dataset_name, index_fields)
+        
+        status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+            create_idx_statement)
+        
+        if status != "success" or not self.cbas_util.verify_index_created(
+            self.index_name, self.index_fields, dataset_obj.name)[0]:
+            self.fail("Create Index query failed")
+        
+        statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+        
+        if not self.verify_index_used(statement, True, self.index_name):
+            self.fail("Index was not used while querying the dataset")
+        
+        self.bucket_util.drop_collection(self.cluster.master, dataset_obj.kv_bucket_obj, 
+                                         scope_name=dataset_obj.kv_scope_obj.name,
+                                         collection_name=dataset_obj.kv_collection_obj.name)
+        
+        if not self.cbas_util.validate_cbas_dataset_items_count(
+            dataset_obj.full_dataset_name, 0):
+            self.fail("Data still present in dataset even when the KV collection is deleted.")
+        
+        if not self.verify_index_used(statement, True, self.index_name):
+            self.fail("Index was not used while querying the dataset")
+            
+        self.bucket_util.create_collection(
+            self.cluster.master, dataset_obj.kv_bucket_obj, 
+            scope_name=dataset_obj.kv_scope_obj.name,
+            collection_spec={"name" : dataset_obj.kv_collection_obj.name})
+        
+        load_gen = doc_generator(self.key, 0, self.num_items)
+        self.task.load_gen_docs(
+            self.cluster, dataset_obj.kv_bucket_obj, load_gen, "create", 
+            exp=0, batch_size=100, process_concurrency=8,
+            replicate_to=self.replicate_to, persist_to=self.persist_to,
+            durability=self.durability_level,
+            timeout_secs=self.sdk_timeout, scope=dataset_obj.kv_scope_obj.name,
+            collection=dataset_obj.kv_collection_obj.name)
+        
+        if not self.cbas_util.validate_cbas_dataset_items_count(
+            dataset_obj.full_dataset_name, 
+            dataset_obj.get_item_count_in_collection(
+                dataset_obj.bucket_util,dataset_obj.kv_bucket_obj, 
+                dataset_obj.kv_scope_obj.name, dataset_obj.kv_collection_obj.name)):
+            self.fail("Data ingestion after collection recreation failed.")
+        
+        if not self.verify_index_used(statement, True, self.index_name):
+            self.fail("Index was not used while querying the dataset")
+        
+        self.log.info("Test finished")
+    
+    def test_dataset_after_deleting_and_recreating_KV_bucket(self):
+        self.log.info("Test started")
+        
+        dataset_objs = list()
+        
+        for i in range(0,3):
+            
+            dataset_objs.append(Dataset(
+                bucket_util=self.bucket_util,
+                cbas_util=self.cbas_util,
+                consider_default_KV_scope=True, 
+                consider_default_KV_collection=True,
+                dataset_name_cardinality=int(self.input.param('cardinality', 1)),
+                bucket_cardinality=int(self.input.param('bucket_cardinality', 3)),
+                random_dataset_name=True
+                ))
+        
+        for dataset_obj in dataset_objs:
+            dataset_creation_methods = ["enable_cbas_from_kv","cbas_dataset","cbas_collection"]
+            dataset_creation_method=random.choice(dataset_creation_methods)
+            dataset_creation_methods.remove(dataset_creation_method)
+            
+            dataset_obj.setup_dataset(
+                dataset_creation_method=dataset_creation_method,
+                validate_metadata=True, validate_doc_count=True, create_dataverse=True)
+            
+            index_fields = ""
+            for index_field in self.index_fields:
+                index_fields += index_field + ","
+            index_fields = index_fields[:-1]
+            
+            if self.input.param('analytics_index', False):
+                create_idx_statement = "create analytics index {0} on {1}({2});".format(
+                    self.index_name, dataset_obj.full_dataset_name, index_fields)
+            else:
+                create_idx_statement = "create index {0} on {1}({2});".format(
+                    self.index_name, dataset_obj.full_dataset_name, index_fields)
+            
+            status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+                create_idx_statement)
+            
+            if status != "success" or not self.cbas_util.verify_index_created(
+                self.index_name, self.index_fields, dataset_obj.name)[0]:
+                self.fail("Create Index query failed")
+            
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+            
+            if not self.verify_index_used(statement, True, self.index_name):
+                self.fail("Index was not used while querying the dataset")
+        
+        if not self.bucket_util.delete_bucket(
+            self.cluster.master, dataset_obj.kv_bucket_obj, 
+            wait_for_bucket_deletion=True):
+            self.fail("Error while deleting bucket")
+        
+        for dataset_obj in dataset_objs:
+            if not self.cbas_util.validate_cbas_dataset_items_count(
+                dataset_obj.full_dataset_name, 0):
+                self.fail("Data still present in dataset even when the KV collection is deleted.")
+            
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+            if not self.verify_index_used(statement, True, self.index_name):
+                self.fail("Index was not used while querying the dataset")
+        
+        self.collectionSetUp(self.cluster, self.bucket_util, self.cluster_util)
+        
+        for dataset_obj in dataset_objs:
+            if not self.cbas_util.validate_cbas_dataset_items_count(
+                dataset_obj.full_dataset_name, 
+                dataset_obj.get_item_count_in_collection(
+                    dataset_obj.bucket_util,dataset_obj.kv_bucket_obj, 
+                    dataset_obj.kv_scope_obj.name, dataset_obj.kv_collection_obj.name)):
+                self.fail("Data ingestion after collection recreation failed.")
+            
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+            if not self.verify_index_used(statement, True, self.index_name):
+                self.fail("Index was not used while querying the dataset")
+        
+        self.log.info("Test finished")
+    
+    def test_dataset_after_deleting_and_recreating_KV_scope(self):
+        self.log.info("Test started")
+        
+        dataset_objs = list()
+        exclude_scope = list()
+        
+        for i in range(0,3):
+            
+            dataset_objs.append(Dataset(
+                bucket_util=self.bucket_util,
+                cbas_util=self.cbas_util,
+                consider_default_KV_scope=True, 
+                consider_default_KV_collection=True,
+                dataset_name_cardinality=int(self.input.param('cardinality', 1)),
+                bucket_cardinality=int(self.input.param('bucket_cardinality', 3)),
+                random_dataset_name=True,
+                exclude_scope=exclude_scope
+                ))
+            
+            # Set exclude _scope only the first time
+            if not exclude_scope:
+                bucket_spec = self.bucket_util.get_bucket_template_from_package(self.spec_name)
+                exclude_scope = (bucket_spec["buckets"]["default"]["scopes"].keys()).remove(
+                    dataset_objs[0].kv_scope_obj.name)
+                
+        for dataset_obj in dataset_objs:
+            dataset_creation_methods = ["enable_cbas_from_kv","cbas_dataset","cbas_collection"]
+            dataset_creation_method=random.choice(dataset_creation_methods)
+            dataset_creation_methods.remove(dataset_creation_method)
+            dataset_obj.setup_dataset(
+                dataset_creation_method=dataset_creation_method,
+                validate_metadata=True, validate_doc_count=True, create_dataverse=True)
+            
+            index_fields = ""
+            for index_field in self.index_fields:
+                index_fields += index_field + ","
+            index_fields = index_fields[:-1]
+            
+            if self.input.param('analytics_index', False):
+                create_idx_statement = "create analytics index {0} on {1}({2});".format(
+                    self.index_name, dataset_obj.full_dataset_name, index_fields)
+            else:
+                create_idx_statement = "create index {0} on {1}({2});".format(
+                    self.index_name, dataset_obj.full_dataset_name, index_fields)
+            
+            status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+                create_idx_statement)
+            
+            if status != "success" or not self.cbas_util.verify_index_created(
+                self.index_name, self.index_fields, dataset_obj.name)[0]:
+                self.fail("Create Index query failed")
+            
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+            
+            if not self.verify_index_used(statement, True, self.index_name):
+                self.fail("Index was not used while querying the dataset")
+        
+        if not self.bucket_util.drop_scope(
+            self.cluster.master, dataset_obj.kv_bucket_obj, 
+            dataset_obj.kv_scope_obj.name):
+            self.fail("Error while deleting bucket")
+        
+        for dataset_obj in dataset_objs:
+            if not self.cbas_util.validate_cbas_dataset_items_count(
+                dataset_obj.full_dataset_name, 0):
+                self.fail("Data still present in dataset even when the KV collection is deleted.")
+            
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+            if not self.verify_index_used(statement, True, self.index_name):
+                self.fail("Index was not used while querying the dataset")
+        
+        self.bucket_util.create_scope(
+            self.cluster.master, dataset_obj.kv_bucket_obj, scope_spec={"name":dataset_obj.kv_scope_obj.name})
+        
+        for collection in bucket_spec["buckets"]["default"]["scopes"][dataset_obj.kv_scope_obj.name]["collections"]:
+            
+            self.bucket_util.create_collection(
+                self.cluster.master, dataset_obj.kv_bucket_obj, 
+                scope_name=dataset_obj.kv_scope_obj.name,
+                collection_spec={"name" : collection})
+        
+            load_gen = doc_generator(self.key, 0, 100)
+            self.task.load_gen_docs(
+                self.cluster, dataset_obj.kv_bucket_obj, load_gen, "create", 
+                exp=0, batch_size=100, process_concurrency=8,
+                replicate_to=self.replicate_to, persist_to=self.persist_to,
+                durability=self.durability_level,
+                timeout_secs=self.sdk_timeout, scope=dataset_obj.kv_scope_obj.name,
+                collection=collection)
+            
+        
+        for dataset_obj in dataset_objs:
+            if not self.cbas_util.validate_cbas_dataset_items_count(
+                dataset_obj.full_dataset_name, 
+                dataset_obj.get_item_count_in_collection(
+                    dataset_obj.bucket_util,dataset_obj.kv_bucket_obj, 
+                    dataset_obj.kv_scope_obj.name, dataset_obj.kv_collection_obj.name)):
+                self.fail("Data ingestion after collection recreation failed.")
+            
+            statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+            if not self.verify_index_used(statement, True, self.index_name):
+                self.fail("Index was not used while querying the dataset")
+        
+        self.log.info("Test finished")
+    
+    def test_KV_collection_deletion_does_not_effect_dataset_on_other_collections_in_same_scope(self):
+        self.log.info("Test started")
+        
+        dataset_obj = Dataset(
+            bucket_util=self.bucket_util,
+            cbas_util=self.cbas_util,
+            consider_default_KV_scope=True, 
+            consider_default_KV_collection=True,
+            dataset_name_cardinality=int(self.input.param('cardinality', 1)),
+            bucket_cardinality=int(self.input.param('bucket_cardinality', 3)),
+            random_dataset_name=True
+            )
+        
+        dataset_obj.setup_dataset(
+            dataset_creation_method=self.input.param('dataset_creation_method', "cbas_dataset"),
+            validate_metadata=True, validate_doc_count=True, create_dataverse=True)
+        
+        index_fields = ""
+        for index_field in self.index_fields:
+            index_fields += index_field + ","
+        index_fields = index_fields[:-1]
+        
+        if self.input.param('analytics_index', False):
+            create_idx_statement = "create analytics index {0} on {1}({2});".format(
+                self.index_name, dataset_obj.full_dataset_name, index_fields)
+        else:
+            create_idx_statement = "create index {0} on {1}({2});".format(
+                self.index_name, dataset_obj.full_dataset_name, index_fields)
+        
+        status, metrics, errors, results, _ = self.cbas_util.execute_statement_on_cbas_util(
+            create_idx_statement)
+        
+        if status != "success" or not self.cbas_util.verify_index_created(
+            self.index_name, self.index_fields, dataset_obj.name)[0]:
+            self.fail("Create Index query failed")
+        
+        statement = 'SELECT VALUE v FROM '+ dataset_obj.full_dataset_name + ' v WHERE age > 2'
+        
+        if not self.verify_index_used(statement, True, self.index_name):
+            self.fail("Index was not used while querying the dataset")
+        
+        bucket_spec = self.bucket_util.get_bucket_template_from_package(self.spec_name)
+        collection_to_delete = random.choice(
+            (bucket_spec["buckets"]["default"]["scopes"][dataset_obj.kv_scope_obj.name]["collections"].keys()).remove(
+                dataset_obj.kv_collection_obj.name))
+        self.bucket_util.drop_collection(self.cluster.master, dataset_obj.kv_bucket_obj, 
+                                         scope_name=dataset_obj.kv_scope_obj.name,
+                                         collection_name=collection_to_delete)
+        
+        if not self.cbas_util.validate_cbas_dataset_items_count(
+            dataset_obj.full_dataset_name, 
+            dataset_obj.get_item_count_in_collection(
+                dataset_obj.bucket_util,dataset_obj.kv_bucket_obj, 
+                dataset_obj.kv_scope_obj.name, dataset_obj.kv_collection_obj.name)):
+            self.fail("Data ingestion after collection recreation failed.")
+        
+        if not self.verify_index_used(statement, True, self.index_name):
+            self.fail("Index was not used while querying the dataset")
+        
         self.log.info("Test finished")

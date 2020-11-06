@@ -257,6 +257,8 @@ class CbasUtil:
         """
         params = dict()
         for key, value in link_properties.iteritems():
+            if key == "dataverse":
+                key = "scope"
             if value:
                 if isinstance(value, unicode):
                     params[key] = str(value)
@@ -296,7 +298,7 @@ class CbasUtil:
         if restapi:
             params = dict()
             if dataverse:
-                params["dataverse"] = dataverse
+                params["scope"] = dataverse
             if link_name:
                 params["name"] = link_name
             if link_type:
@@ -360,6 +362,8 @@ class CbasUtil:
         
         params = dict()
         for key, value in link_properties.iteritems():
+            if key == "dataverse":
+                key = "scope"
             if value:
                 if isinstance(value, unicode):
                     params[key] = str(value)
