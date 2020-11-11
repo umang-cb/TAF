@@ -391,7 +391,7 @@ class CbasUtil:
         cmd_create_dataset = cmd_create_dataset + "on {0} ".format(cbas_bucket_name)
         
         if link_name:
-            cmd_create_dataset += "at {1} ".format(link_name)
+            cmd_create_dataset += "at {0} ".format(link_name)
 
         if where_field and where_value:
             cmd_create_dataset = cmd_create_dataset + "WHERE `{0}`=\"{1}\";".format(where_field, where_value)
@@ -494,8 +494,11 @@ class CbasUtil:
         :return True/False
         
         """
-
-        cmd_create_dataset = "CREATE EXTERNAL DATASET {0}".format(cbas_dataset_name)
+        if dataverse != "Default":
+            cmd_create_dataset = "CREATE EXTERNAL DATASET {0}.{1}".format(
+                dataverse, cbas_dataset_name)
+        else:
+            cmd_create_dataset = "CREATE EXTERNAL DATASET {0}".format(cbas_dataset_name)
 
         if object_construction_def:
             cmd_create_dataset += "({0})".format(object_construction_def)
@@ -527,10 +530,6 @@ class CbasUtil:
             with_parameters["exclude"] = exclude
 
         cmd_create_dataset += " WITH {0};".format(json.dumps(with_parameters))
-
-        if dataverse != "Default":
-            dataverse_prefix = 'use ' + dataverse + ';\n'
-            cmd_create_dataset = dataverse_prefix + cmd_create_dataset
 
         status, metrics, errors, results, _ = self.execute_statement_on_cbas_util(
             cmd_create_dataset, username=username, password=password)
@@ -2186,7 +2185,7 @@ class Dataset:
                     check_for_special_char_in_name and "-" in _):
                     full_name.append("`{0}`".format(_))
                 else:
-                    full_name.append(_)
+                    full_name.append(_.strip("`"))
         return '.'.join(full_name)
     
     def get_fully_quantified_dataset_name(self):
@@ -2248,7 +2247,7 @@ class Dataset:
         return bucket, scope, collection
     
     @staticmethod
-    def create_name_with_cardinality(name_cardinality=0, max_length=255, 
+    def create_name_with_cardinality(name_cardinality=0, max_length=30, 
                                      fixed_length=False):
         """
         Creates a name based on name_cadinality.
