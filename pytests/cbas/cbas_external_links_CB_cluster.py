@@ -366,7 +366,9 @@ class CBASExternalLinks(CBASBaseTest):
                     "recreate_link": True,
                     "validate_error_msg": False,
                     "expected_error": "Link {0}.{1} already exists".format(
-                        self.link_info["dataverse"], self.link_info["name"])
+                        Dataset.format_name_for_error(True,
+                                                      self.link_info["dataverse"], 
+                                                      self.link_info["name"]))
                 },
                 {
                     "description": "Create a link with a name of form Local*",
