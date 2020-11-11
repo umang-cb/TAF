@@ -307,16 +307,16 @@ class CBASExternalLinks(CBASBaseTest):
                     "hostname": self.invalid_ip,
                     "expected_error": "Cannot connect to host for link {0}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                       self.link_info["name"]))
                 },
                 {
                     "description": "Create a link with an invalid credentials",
                     "password": self.invalid_value,
                     "expected_error": "Invalid credentials for link {0}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                       self.link_info["name"]))
                 },
                 {
                     "description": "Create a link with an invalid encryption value",
@@ -329,8 +329,8 @@ class CBASExternalLinks(CBASBaseTest):
                     "certificate": self.read_file(self.analytics_cluster.root_ca_path),
                     "expected_error": "Cannot connect to host for link {0}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                       self.link_info["name"]))
                 },
                 {
                     "description": "Create a link with an invalid client certificate",
@@ -343,8 +343,8 @@ class CBASExternalLinks(CBASBaseTest):
                         self.analytics_cluster.client_certs[self.analytics_cluster.master.ip]["cert_pem"]),
                     "expected_error": "Cannot connect to host for link {0}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                       self.link_info["name"]))
                 },
                 {
                     "description": "Create a link with an invalid client key",
@@ -358,8 +358,8 @@ class CBASExternalLinks(CBASBaseTest):
                     "password": None,
                     "expected_error": "Cannot connect to host for link {0}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                       self.link_info["name"]))
                 },
                 {
                     "description": "Create a link with a name that already exists in the dataverse",
@@ -612,7 +612,7 @@ class CBASExternalLinks(CBASBaseTest):
                     else:
                         if not (len(response) == testcase["expected_hits"]):
                             raise Exception("Expected links - {0} \t Actual links - {1}".format(testcase["expected_hits"], len(response)))
-                        if not (response[0]["dataverse"] == self.link_info["dataverse"]):
+                        if not (response[0]["dataverse"] == Dataset.format_name_for_error(True,self.link_info["dataverse"])):
                             raise Exception("Expected - {0} \t Actual- {1}".format(self.link_info["dataverse"], response[0]["dataverse"]))
                         if not (response[0]["name"] == self.link_info["name"]):
                             raise Exception("Expected - {0} \t Actual- {1}".format(self.link_info["name"], response[0]["name"]))
@@ -787,8 +787,8 @@ class CBASExternalLinks(CBASBaseTest):
                 "validate_error_msg": True,
                 "expected_error": "Cannot connect to host for link {0}.{1}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                       self.link_info["name"]))
                 },
             {
                 "description": "Changing credentials to invalid credentials",
@@ -796,8 +796,8 @@ class CBASExternalLinks(CBASBaseTest):
                 "validate_error_msg": True,
                 "expected_error": "Invalid credentials for link {0}.{1}".format(
                     Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                  self.link_info["dataverse"], 
+                                                  self.link_info["name"]))
                 },
             {
                 "description": "Changing credentials to another set of valid credentials",
@@ -825,8 +825,8 @@ class CBASExternalLinks(CBASBaseTest):
                 "validate_error_msg": True,
                 "expected_error": "Cannot connect to host for link {0}.{1}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                      self.link_info["name"]))
                 },
             {
                 "description": "Changing encryption type to full, with valid root certificate, clientcertificate and client key",
@@ -849,8 +849,8 @@ class CBASExternalLinks(CBASBaseTest):
                 "validate_error_msg": True,
                 "expected_error": "Cannot connect to host for link {0}.{1}".format(
                         Dataset.format_name_for_error(True,
-                                                      [self.link_info["dataverse"], 
-                                                       self.link_info["name"]]))
+                                                      self.link_info["dataverse"], 
+                                                      self.link_info["name"]))
                 },
             {
                 "description": "Changing encryption type to full, with valid root certificate and clientKey and invalid clientcertificate",
@@ -862,7 +862,7 @@ class CBASExternalLinks(CBASBaseTest):
                 "clientCertificate": self.read_file(self.analytics_cluster.client_certs[self.analytics_cluster.master.ip]["cert_pem"]),
                 "validate_error_msg": True,
                 "expected_error": "Cannot connect to host for link {0}.{1}".format(
-                        self.link_info["dataverse"], self.link_info["name"])
+                        Dataset.format_name_for_error(True, self.link_info["dataverse"], self.link_info["name"]))
                 }
             ]
 
