@@ -671,14 +671,15 @@ class CBASExternalLinks(CBASBaseTest):
 
         if operation == "create":
             if not self.analytics_cluster.cbas_util.wait_for_ingestion_complete(
-                [self.cbas_dataset_name],self.sample_bucket.stats.expected_item_count + 10, 300):
+                ["{0}.{1}".format(self.link_info["dataverse"],self.cbas_dataset_name)],
+                self.sample_bucket.stats.expected_item_count + 10, 300):
                 raise Exception("Data Ingestion did not complete")
         else:
             end_time = time.time() + timeout
 
             while time.time() < end_time:
-                cmd_get_num_mutated_items = "select count(*) from {0} where mutated={1};".format(self.cbas_dataset_name,
-                                                                                                 str(mutation_num))
+                cmd_get_num_mutated_items = "select count(*) from {0}.{1} where mutated={2};".format(
+                    self.link_info["dataverse"],self.cbas_dataset_name, str(mutation_num))
                 status, metrics, errors, results, _ = self.analytics_cluster.cbas_util.execute_statement_on_cbas_util(
                     cmd_get_num_mutated_items, timeout=timeout, analytics_timeout=timeout)
                 if status != "success":
