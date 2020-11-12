@@ -2181,11 +2181,12 @@ class Dataset:
         full_name = list()
         for name in args:
             for _ in name.split("."):
+                _ = _.strip("`")
                 if _[0].isdigit() or (
                     check_for_special_char_in_name and "-" in _):
                     full_name.append("`{0}`".format(_))
                 else:
-                    full_name.append(_.strip("`"))
+                    full_name.append(_)
         return '.'.join(full_name)
     
     def get_fully_quantified_dataset_name(self):
