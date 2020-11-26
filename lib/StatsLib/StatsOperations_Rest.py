@@ -4,8 +4,10 @@ import re
 
 import testconstants
 from connections.Rest_Connection import RestConnection
+from membase.api.rest_client import RestConnection as RestClientConnection
 from platform_utils.remote.remote_util import RemoteMachineShellConnection
 from global_vars import logger
+from pytests.scalable_stats import constants
 
 
 class StatsHelper(RestConnection):
@@ -22,6 +24,9 @@ class StatsHelper(RestConnection):
         # Prometheus scrapes from KV metrics from this port, and not 11210.
         # Look at: /opt/couchbase/var/lib/couchbase/config/prometheus.yaml for ports
         self.memcached_base_url = "http://{0}:{1}".format(self.ip, 11280)
+        self.prometheus_base_url = "http://{0}:{1}".format(self.ip, 9123)
+
+        self.rest = RestClientConnection(server)
 
         self.curl_path = "curl"
         shell = RemoteMachineShellConnection(self.server)
@@ -109,12 +114,6 @@ class StatsHelper(RestConnection):
         # ToDo - Think of a way to a parse time series, instead of returning the entire content
         return json.loads(content)
 
-    def execute_promql_query(self, query):
-        api = '%s%s%s' % (self.base_url, '/pools/default/stats?query=', urllib.quote_plus("%s" % query))
-        status, content, _ = self._http_request(api)
-        if not status:
-            raise Exception(content)
-
     def get_instant_api_metrics(self, metric_name, label_values=None, optional_params=None):
         """
         :metric_name: metric_name to query
@@ -136,23 +135,53 @@ class StatsHelper(RestConnection):
 
     def configure_stats_settings_from_diag_eval(self, key, value):
         """
-        To change stats config settings thorugh diag/eval
+        To change stats config settings through diag/eval
         :key:  scrape_interval, retention_size, prometheus_metrics_scrape_interval etc
         :value: new_value to be set for the above key.
         """
-        def diag_eval(code, print_log=True):
-            api = '{0}{1}'.format(self.baseUrl, 'diag/eval/')
-            status_i, content_i, header = self._http_request(api, "POST", code)
-            if print_log:
-                self.log.debug(
-                    "/diag/eval status on {0}:{1}: {2} content: {3} command: {4}"
-                        .format(self.ip, self.port, status_i, content_i, code))
-            return status_i, content_i
-
-        key_value = "{%s, %s}" % (key, str(value))
-        status, content = diag_eval("ns_config:set_sub(stats_settings, [%s])" % key_value)
+        shell = RemoteMachineShellConnection(self.server)
+        shell.enable_diag_eval_on_non_local_hosts()
+        shell.disconnect()
+        key_value = '{%s, %s}' % (key, str(value))
+        status, content = self.rest.diag_eval('ns_config:set_sub(stats_settings, [%s])' % key_value)
         if not status:
             raise Exception(content)
+
+    def reset_stats_settings_from_diag_eval(self, key=None):
+        """
+        To restore stats config to defaults through diag/eval
+        :key: Specific key to restore eg: retention_size
+        """
+        shell = RemoteMachineShellConnection(self.server)
+        shell.enable_diag_eval_on_non_local_hosts()
+        shell.disconnect()
+        default_config_dict = constants.stats_default_config
+        if key:
+            value = default_config_dict[key]
+            key_value = '{%s, %s}' % (key, str(value))
+            status, content = self.rest.diag_eval('ns_config:set_sub(stats_settings, [%s])' % key_value)
+            if not status:
+                raise Exception(content)
+        else:
+            # Reset all
+            for key, value in default_config_dict.items():
+                key_value = '{%s, %s}' % (key, str(value))
+                status, content = self.rest.diag_eval('ns_config:set_sub(stats_settings, [%s])' % key_value)
+                if not status:
+                    raise Exception(content)
+
+    def query_prometheus_federation(self, query):
+        """
+        Queries prometheus directly which runs at 9123 port
+        :query: Query to be executed eg: targets?state=active
+        :return json.loads(content): dictionary of returned content
+        (requires auth_enabled=false and listen_addr_type=any from ns_config)
+        """
+        api = '%s%s%s' % (self.prometheus_base_url, '/api/v1/', query)
+        status, content, _ = self._http_request(api)
+        if not status:
+            raise Exception(content)
+        return json.loads(content)
 
     @staticmethod
     def _build_params_for_get_request(params_dict):
@@ -180,7 +209,7 @@ class StatsHelper(RestConnection):
             return self.cbas_base_url
         # ToDo enumerate other services that support exposition of prometheus metrics
         else:
-            raise Exception("unknown component name")
+            raise Exception("unknown component name : {0}".format(component))
 
     def _run_curl_command_from_localhost(self, cmd):
         """
@@ -191,6 +220,7 @@ class StatsHelper(RestConnection):
         """
         shell = RemoteMachineShellConnection(self.server)
         output, error = shell.execute_command(cmd)
+        shell.disconnect()
 
         if error:
             self.log.error("Error making Curl request on server {0} {1}".format(self.server.ip, error))

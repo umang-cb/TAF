@@ -5,6 +5,7 @@ Created on Sep 26, 2017
 """
 
 import copy
+import re
 import time
 import os
 
@@ -13,6 +14,7 @@ import testconstants
 from Cb_constants import constants
 from Jython_tasks.task import MonitorActiveTask
 from TestInput import TestInputSingleton, TestInputServer
+from cb_tools.cb_collectinfo import CbCollectInfo
 from common_lib import sleep
 from couchbase_cli import CouchbaseCLI
 from global_vars import logger
@@ -938,9 +940,12 @@ class ClusterUtils:
                     break
         return node_picked
 
-    def pick_nodes(self, master, howmany=1, target_node=None):
+    def pick_nodes(self, master, howmany=1, target_node=None, exclude_nodes=None):
         rest = RestConnection(master)
         nodes = rest.node_statuses()
+        if exclude_nodes:
+            exclude_nodes_ips = [node.ip for node in exclude_nodes]
+            nodes = [node for node in nodes if node.ip not in exclude_nodes_ips]
         picked = []
         for node_for_stat in nodes:
             if node_for_stat.ip != master.ip or str(node_for_stat.port) != master.port:
@@ -1020,32 +1025,34 @@ class ClusterUtils:
     def wait_for_cb_collect_to_complete(self, rest, retry_count=60):
         self.log.info("Polling active_tasks to check cbcollect status")
         retry = 0
+        status = False
         while retry < retry_count:
             cb_collect_response = rest.ns_server_tasks("clusterLogsCollection")
             self.log.debug("CBCollectInfo Iteration {} - {}"
                            .format(retry,
                                    cb_collect_response["status"]))
             if cb_collect_response['status'] == 'completed':
+                status = True
                 break
             else:
                 retry += 1
                 sleep(10, "CB collect still running", log_type="infra")
+        return status
 
     def copy_cb_collect_logs(self, rest, nodes, cluster, log_path):
+        status = True
         cb_collect_response = rest.ns_server_tasks("clusterLogsCollection")
         self.log.debug(cb_collect_response)
         node_ids = [node.id for node in nodes]
         if 'perNode' in cb_collect_response:
             for idx, node in enumerate(nodes):
-                self.log.info(
-                    "%s: Copying cbcollect ZIP file to Client" %
-                    node_ids[idx])
+                self.log.info("%s: Copying cbcollect ZIP file to Client"
+                              % node_ids[idx])
                 server = [server for server in cluster.servers if
                           server.ip == node.ip][0]
                 remote_client = RemoteMachineShellConnection(server)
                 cb_collect_path = \
-                    cb_collect_response['perNode'][node_ids[idx]][
-                        'path']
+                    cb_collect_response['perNode'][node_ids[idx]]['path']
                 zip_file_copied = remote_client.get_file(
                     os.path.dirname(cb_collect_path),
                     os.path.basename(cb_collect_path),
@@ -1054,7 +1061,56 @@ class ClusterUtils:
                     remote_client.execute_command("rm -f %s"
                                                   % cb_collect_path)
                     remote_client.disconnect()
-                self.log.error(
-                    "%s node cb collect zip coped on client : %s"
-                    % (node.ip, zip_file_copied))
+                cb_collect_size = int(os.path.getsize(
+                    log_path + "/" + os.path.basename(cb_collect_path)))
+                if cb_collect_size == 0:
+                    self.log.critical("%s cb_collect zip file size: %s"
+                                      % (node.ip, cb_collect_size))
+                    status = False
+                self.log.error("%s node cb collect zip coped on client : %s"
+                               % (node.ip, zip_file_copied))
+        return status
 
+    def run_cb_collect(self, node, file_name,
+                       options="", result=dict()):
+        """
+        Triggers cb_collect_info on target node from command line (uses shell)
+        """
+        self.log.info("%s - Running cb_collect_info" % node.ip)
+        shell = RemoteMachineShellConnection(node)
+        output, error = \
+            CbCollectInfo(shell).start_collection(
+                file_name,
+                options=options,
+                compress_output=True)
+        result["output"] = output
+        result["error"] = error
+        self.log.info("%s - cb_collect_info completed" % node.ip)
+        shell.disconnect()
+
+        self.validate_cb_collect_file_size(node, file_name, result)
+
+    def validate_cb_collect_file_size(self, node, file_name, result=dict()):
+        result["file_name"] = "NA"
+        result["file_size"] = 0
+        shell = RemoteMachineShellConnection(node)
+        output, error = shell.execute_command("du -sh %s" % file_name)
+        if error:
+            self.log.error("%s - Error during cb_collect_file validation: %s"
+                           % (node.ip, error))
+            return
+        output = "".join(output)
+
+        du_output_pattern = "([0-9.A-Za-z]+)[\t ]+([0-9A-Za-z/_.-]+)"
+        du_output_pattern = re.compile(du_output_pattern)
+        du_match = du_output_pattern.match(output)
+        if du_match:
+            result["file_name"] = du_match.group(2)
+            result["file_size"] = du_match.group(1)
+            self.log.info("%s - %s::%s" % (node.ip, result["file_name"],
+                                           result["file_size"]))
+            if result["file_size"] == "0":
+                self.log.warning("%s - file size is zero" % node.ip)
+        else:
+            self.log.error("%s - du command failure: %s" % (node.ip, output))
+        shell.disconnect()

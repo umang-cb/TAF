@@ -283,7 +283,7 @@ class MagmaBaseTest(BaseTestCase):
 
         self.cluster_util.print_cluster_stats()
         dgm = BucketHelper(self.cluster.master).fetch_bucket_stats(
-            self.buckets[0].name)["op"]["samples"]["vb_active_resident_items_ratio"][-1]
+            self.buckets[0].name, "hour")["op"]["samples"]["vb_active_resident_items_ratio"][-1]
         self.log.info("## Active Resident Threshold of {0} is {1} ##".format(
             self.buckets[0].name, dgm))
         super(MagmaBaseTest, self).tearDown()
@@ -743,7 +743,7 @@ class MagmaBaseTest(BaseTestCase):
                         count -= 1
                     count = kill_itr
 
-            result, core_msg, streamFailures = self.check_coredump_exist(
+            result, core_msg, streamFailures, asan_msg = self.check_coredump_exist(
                 self.cluster.nodes_in_cluster, force_collect=force_collect)
             if result:
                 self.stop_crash = True
@@ -752,6 +752,8 @@ class MagmaBaseTest(BaseTestCase):
                     self.log.error("Issues found on server: %s" % core_msg)
                 if streamFailures:
                     self.log.error("Issues found on server: %s" % streamFailures)
+                if asan_msg:
+                    self.log.error("Issues found on server: %s" % asan_msg)
                 self.assertFalse(result)
 
             if wait:
