@@ -5,6 +5,7 @@ Created on Sep 26, 2017
 """
 
 import copy
+import json
 import re
 import time
 import os
@@ -58,20 +59,26 @@ class CBCluster:
         if node_in_cluster is None:
             node_in_cluster = self.master
 
-        # Enable diag_eval outside localhost
-        shell = RemoteMachineShellConnection(node_in_cluster)
-        shell.enable_diag_eval_on_non_local_hosts()
-        shell.disconnect()
+        retry_index = 0
+        max_retry = 12
+        orchestrator_node = None
+        status = None
 
         rest = RestConnection(node_in_cluster)
-        command = "mb_master:master_node()."
-        status, content = rest.diag_eval(command)
-
-        master_ip = content.split("@")[1].replace("\\", '').replace(
-            "'", "")
-        self.master = [server for server in self.servers if server.ip ==
-                       master_ip][0]
-
+        while retry_index < max_retry:
+            status, content = rest.get_terse_cluster_info()
+            json_content = json.loads(content)
+            orchestrator_node = json_content["orchestrator"]
+            if orchestrator_node == "undefined":
+                sleep(1, message="orchestrator='undefined'", log_type="test")
+            else:
+                break
+        orchestrator_node = \
+            orchestrator_node.split("@")[1].replace("\\", '').replace("'", "")
+        self.master = [server for server in self.servers
+                       if server.ip == orchestrator_node][0]
+        # Overriding to str type to match the previous dial/eval return value
+        content = "ns_1@%s" % self.master.ip
         return status, content
 
 
@@ -87,9 +94,7 @@ class ClusterUtils:
 
     def find_orchestrator(self, node=None):
         status, content = self.cluster.update_master(node)
-        content = content.replace("'", '')
         self.rest = RestConnection(self.cluster.master)
-
         return status, content
 
     def set_metadata_purge_interval(self, interval=0.04):
@@ -1007,6 +1012,11 @@ class ClusterUtils:
                                % (server.ip, core_dump_count))
             shell.disconnect()
 
+    def create_stats_snapshot(self, master):
+        self.log.debug("Triggering stats snapshot")
+        rest = RestConnection(master)
+        return rest.create_stats_snapshhot()
+
     def trigger_cb_collect_on_cluster(self, rest, nodes, single_node=False):
         params = dict()
         node_ids = [node.id for node in nodes]
@@ -1060,14 +1070,14 @@ class ClusterUtils:
                 if zip_file_copied:
                     remote_client.execute_command("rm -f %s"
                                                   % cb_collect_path)
-                    remote_client.disconnect()
+                remote_client.disconnect()
                 cb_collect_size = int(os.path.getsize(
                     log_path + "/" + os.path.basename(cb_collect_path)))
                 if cb_collect_size == 0:
                     self.log.critical("%s cb_collect zip file size: %s"
                                       % (node.ip, cb_collect_size))
                     status = False
-                self.log.error("%s node cb collect zip coped on client : %s"
+                self.log.error("%s node cb collect zip copied on client : %s"
                                % (node.ip, zip_file_copied))
         return status
 

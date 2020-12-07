@@ -18,6 +18,7 @@ from remote.remote_util import RemoteMachineShellConnection
 from Jython_tasks.task_manager import TaskManager
 from sdk_client3 import SDKClientPool
 from test_summary import TestSummary
+from datetime import datetime
 
 
 class BaseTestCase(unittest.TestCase):
@@ -191,6 +192,9 @@ class BaseTestCase(unittest.TestCase):
 
         # variable for log collection using cbCollect
         self.get_cbcollect_info = self.input.param("get-cbcollect-info", False)
+
+        # Variable for initializing the current (start of test) timestamp
+        self.start_timestamp = datetime.now()
 
         '''
         Be careful while using this flag.
@@ -430,7 +434,7 @@ class BaseTestCase(unittest.TestCase):
                 # clean up everything
                 remote_client.execute_command("rm -rf pcaps")
                 remote_client.execute_command("rm -rf " + server.ip + "_pcaps.zip")
-                remote_client.disconnect()
+            remote_client.disconnect()
 
     def tearDown(self):
         self.task_manager.shutdown_task_manager()
@@ -458,12 +462,7 @@ class BaseTestCase(unittest.TestCase):
             try:
                 if self.skip_buckets_handle:
                     return
-                test_failed = (hasattr(self, '_resultForDoCleanups') and
-                               len(self._resultForDoCleanups.failures or
-                                   self._resultForDoCleanups.errors)) or \
-                              (hasattr(self, '_exc_info') and
-                               self._exc_info()[1] is not None)
-
+                test_failed = self.is_test_failed()
                 if test_failed \
                         and TestInputSingleton.input.param("stop-on-failure",
                                                            False) \
@@ -518,6 +517,13 @@ class BaseTestCase(unittest.TestCase):
         if not self.tear_down_while_setup:
             self.task_manager.shutdown_task_manager()
             self.task.shutdown(force=True)
+
+    def is_test_failed(self):
+        return (hasattr(self, '_resultForDoCleanups')
+                and len(self._resultForDoCleanups.failures
+                or self._resultForDoCleanups.errors)) \
+               or (hasattr(self, '_exc_info')
+                   and self._exc_info()[1] is not None)
 
     def handle_setup_exception(self, exception_obj):
         # Shutdown client pool in case of any error before failing
@@ -662,6 +668,25 @@ class BaseTestCase(unittest.TestCase):
             gdbOut = " ".join(gdbOut)
             return gdbOut
 
+        def check_if_new_messages(grep_output_list):
+            """
+            Check the grep's last line for the latest timestamp.
+            If this timestamp is less than than the start_timestamp of the test,
+            then return False (as the grep's output is from previous tests)
+            Note: This method works only if slave's time(timezone) matches that of Vm's;
+                  Otherwise, it won't be possible to compare timestamps
+            """
+            last_line = grep_output_list[-1]
+            timestamp = last_line.split()[0]
+            timestamp = timestamp.split(".")[0]
+            timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
+            self.log.info("Comparing timestamps; Log's latest timestamp is {0} , Test's start timestamp is {1}"
+                          .format(timestamp, self.start_timestamp))
+            if timestamp > self.start_timestamp:
+                return True
+            else:
+                return False
+
         for idx, server in enumerate(servers):
             shell = RemoteMachineShellConnection(server)
             shell.extract_remote_info()
@@ -705,37 +730,41 @@ class BaseTestCase(unittest.TestCase):
                 index = findIndexOf(criticalMessages, "Fatal error encountered during exception handling")
                 criticalMessages = criticalMessages[:index]
                 if (criticalMessages):
-                    print(server.ip + " : Found message in " + logFile.strip("\n"))
-                    print("".join(criticalMessages))
-                    if self.stop_server_on_crash:
-                        shell.stop_couchbase()
-                    result = True
-                    break
+                    if check_if_new_messages(criticalMessages):
+                        print(server.ip + " : Found message in " + logFile.strip("\n"))
+                        print("".join(criticalMessages))
+                        if self.stop_server_on_crash:
+                            shell.stop_couchbase()
+                        result = True
+                        break
                 # Check for ERROR messages in logs
                 errorMessages = shell.execute_command("grep -r 'ERROR' " + logFile.strip("\n") +
                                                       "| grep -v 'XERROR'")[0]
                 if errorMessages:
-                    print(server.ip + " : Found ERROR message in " + logFile.strip("\n"))
-                    print("".join(errorMessages))
-                    result = True
-                    break
+                    if check_if_new_messages(errorMessages):
+                        print(server.ip + " : Found ERROR message in " + logFile.strip("\n"))
+                        print("".join(errorMessages))
+                        result = True
+                        break
                 # Check for "exception occurred in runloop" messages in logs
                 exceptionRunLoop = shell.execute_command("grep -r 'exception occurred in runloop' " +
                                                          logFile.strip("\n"))[0]
                 if exceptionRunLoop:
-                    print(server.ip + " : Found exceptionRunLoop message in " + logFile.strip("\n"))
-                    print("".join(exceptionRunLoop))
-                    result = True
-                    break
+                    if check_if_new_messages(exceptionRunLoop):
+                        print(server.ip + " : Found exceptionRunLoop message in " + logFile.strip("\n"))
+                        print("".join(exceptionRunLoop))
+                        result = True
+                        break
                 # Check for WARN messages in logs
-                warnMessages = shell.execute_command("grep -r 'WARN'" + logFile.strip("\n")
+                warnMessages = shell.execute_command("grep -r 'WARN' " + logFile.strip("\n")
                                                      + "| grep -v Slow "
                                                      + "| grep -v 'The stream closed early because the conn was"
-                                                       " disconnected'")[0]
+                                                     + " disconnected'")[0]
                 if warnMessages:
-                    print(server.ip + " : Found WARN message in " + logFile.strip("\n"))
-                    print("".join(warnMessages))
-                    result = True
+                    if check_if_new_messages(warnMessages):
+                        print(server.ip + " : Found WARN message in " + logFile.strip("\n"))
+                        print("".join(warnMessages))
+                        result = True
                 streamreqfailed = "Stream request failed because the snap start seqno"
                 found = shell.execute_command(("grep -r '{}' " + logFile.strip("\n")).
                                               format(streamreqfailed))[0]
@@ -761,6 +790,7 @@ class BaseTestCase(unittest.TestCase):
                 result = True
             else:
                 self.log.debug(server.ip + " : No sanitizers.log.* files found")
+            shell.disconnect()
 
         if result and force_collect and not self.stop_server_on_crash:
             self.fetch_cb_collect_logs()

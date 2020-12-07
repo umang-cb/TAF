@@ -158,25 +158,19 @@ class BasicDeleteTests(BasicCrudTests):
                     break
 
             msg = "Disk Usage={}MB > {} * init_Usage={}MB"
-            self.assertIs(_res > 1.7 * self.disk_usage[
+            self.assertIs(_res > 2 * self.disk_usage[
                 self.disk_usage.keys()[0]], False,
-                msg.format(disk_usage[0], 0.5,
+                msg.format(disk_usage[0], 2,
                            self.disk_usage[self.disk_usage.keys()[0]]))
 
             disk_usage = self.get_disk_usage(
                 self.buckets[0],
                 self.cluster.nodes_in_cluster)
-            if self.doc_size <= 32:
-                msg = "Iteration={}, SeqTree={}MB exceeds keyTree={}MB"
-                self.assertIs(
-                    disk_usage[2] >= disk_usage[3], True,
-                    msg.format(count+1, disk_usage[3], disk_usage[2]))
-            else:
-                msg = "Iteration={}, Disk Usage={}MB > {} * init_Usage={}MB"
-                self.assertIs(disk_usage[0] > 1.7 * self.disk_usage[
-                    self.disk_usage.keys()[0]],
-                    False, msg.format(count+1, disk_usage[0], 1.7,
-                                      self.disk_usage[self.disk_usage.keys()[0]]))
+            msg = "Iteration={}, Disk Usage={}MB > {} * init_Usage={}MB"
+            self.assertIs(disk_usage[0] > 2 * self.disk_usage[
+                self.disk_usage.keys()[0]],
+                False, msg.format(count+1, disk_usage[0], 2,
+                                  self.disk_usage[self.disk_usage.keys()[0]]))
             #Space Amplifacation check Ends
             count += 1
         self.change_swap_space(self.cluster.nodes_in_cluster, disable=False)

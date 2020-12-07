@@ -92,6 +92,7 @@ class CollectionBase(BaseTestCase):
                           % (bucket.name, result))
             if not self.skip_collections_cleanup:
                 self.bucket_util.remove_scope_collections_for_bucket(bucket)
+        shell.disconnect()
         if self.validate_docs_count_during_teardown:
             self.bucket_util.validate_docs_per_collections_all_buckets()
         super(CollectionBase, self).tearDown()
@@ -166,7 +167,7 @@ class CollectionBase(BaseTestCase):
         ttl_buckets = [
             "multi_bucket.buckets_for_rebalance_tests_with_ttl",
             "multi_bucket.buckets_all_membase_for_rebalance_tests_with_ttl",
-            "multi_bucket.buckets_for_volume_tests_with_ttl"]
+            "volume_templates.buckets_for_volume_tests_with_ttl"]
 
         # Verify initial doc load count
         self.bucket_util._wait_for_stats_all_buckets()
