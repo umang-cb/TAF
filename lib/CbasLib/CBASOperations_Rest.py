@@ -429,7 +429,8 @@ class CBASHelper(RestConnection):
                         elif "error" in content:
                             errors.append({"msg": content["error"], "code": 0 })
                     else:
-                        errors.append({"msg": content, "code": 0 })
+                        content = content.split(":")
+                        errors.append({"msg": content[1], "code": content[0] })
             return status, header['status'], content, errors
         except Exception as err:
             self.log.error("Exception occured while calling rest APi through httplib2.")
