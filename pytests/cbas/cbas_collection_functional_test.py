@@ -358,8 +358,11 @@ class CBASDatasetsAndCollections(CBASBaseTest):
                     dataset_name_cardinality=random.randint(1,3),
                     bucket_cardinality=random.choice([1,3]),
                     random_dataset_name=True)
-                results.append(dataset_obj.setup_dataset(
-                    dataset_creation_method=self.input.param('dataset_creation_method', "cbas_dataset")))
+                try:
+                    results.append(dataset_obj.setup_dataset(
+                        dataset_creation_method=self.input.param('dataset_creation_method', "cbas_dataset")))
+                except Exception:
+                    results.append(False)
                 job_queue.task_done()
         
         for i in range(int(self.input.param('no_of_datasets', 1))):
