@@ -201,7 +201,7 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         self.log.info("TEARDOWN has started")
         self.log.info("================================================================")
         
-        super(CBASDatasetsAndCollections, self).tearDown()
+        """super(CBASDatasetsAndCollections, self).tearDown()"""
         
         self.log.info("================================================================")
         self.log.info("Teardown has finished")
