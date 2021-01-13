@@ -20,6 +20,7 @@ from sdk_exceptions import SDKException
 from com.couchbase.client.java.json import JsonObject
 from couchbase_helper.tuq_helper import N1QLHelper
 from global_vars import logger
+from Cb_constants import CbServer
 
 
 class N1qlBase(CollectionBase):
@@ -58,14 +59,16 @@ class N1qlBase(CollectionBase):
         self.buckets = self.bucket_util.get_all_buckets()
         self.collection_map = {}
         self.txtimeout = self.input.param("txntimeout", 0)
-        self.atrcollection = self.input.param("atrcollection", True)
+        self.atrcollection = self.input.param("atrcollection", False)
         load_spec = self.input.param("load_spec", self.data_spec_name)
         self.num_commit = self.input.param("num_commit", 3)
         self.num_rollback_to_savepoint = \
         self.input.param("num_rollback_to_savepoint", 0)
         self.num_conflict = self.input.param("num_conflict", 0)
         self.write_conflict = self.input.param("write_conflict", False)
-        self.n1ql_helper = N1QLHelper(server=self.servers,
+        self.n1ql_server = self.cluster_util.get_nodes_from_services_map(service_type="n1ql",
+                                                                         get_all_nodes=True)
+        self.n1ql_helper = N1QLHelper(server=self.n1ql_server,
                                       use_rest=True,
                                       buckets = self.buckets,
                                       log=self.log,
@@ -82,26 +85,6 @@ class N1qlBase(CollectionBase):
     def tearDown(self):
         self.n1ql_helper.drop_index()
         super(N1qlBase, self).tearDown()
-
-#     def create_txn(self, txtimeout=0, durability_level=""):
-#         query_params = {}
-#         if self.durability_level:
-#             query_params["durability"] = self.durability_level
-#         if self.txtimeout:
-#             query_params["txtimeout"] = str(txtimeout) + "m"
-#         if self.atrcollection:
-#             collections = self.bucket_util.get_random_collections(
-#             self.buckets, 1, "all", self.num_buckets)
-#             for bucket, scope_dict in collections.items():
-#                 for s_name, c_dict in scope_dict["scopes"].items():
-#                     for c_name, c_data in c_dict["collections"].items():
-#                         keyspace = ("`%s`.`%s`.`%s`"%(bucket, s_name, c_name))
-#             query_params["atrcollection"] = keyspace
-#         stmt = "BEGIN WORK"
-#         print query_params
-#         results = self.n1ql_helper.run_cbq_query(stmt, query_params=query_params)
-#         txid = self.get_txid(results)
-#         return {'txid': txid}
 #
     def runTest(self):
         pass
@@ -116,17 +99,17 @@ class N1qlBase(CollectionBase):
         self.log.info(cmp(actual_result, expected_result))
 
     def validate_update_results(self, index, docs=[], dict_to_add="",
-                                query_params={}):
+                                query_params={}, server=None):
         name = index.split('.')
         query = "SELECT  META().id,* from default:`%s`.`%s`.`%s` " \
                 "WHERE META().id in %s" \
                 % (name[0], name[1], name[2], docs)
         dict_to_add = dict_to_add.split("=")
         dict_to_add[1] = dict_to_add[1].replace('\'', '')
-        result = self.n1ql_helper.run_cbq_query(query, 
-                                                query_params=query_params)
+        result = self.n1ql_helper.run_cbq_query(query,
+                                                query_params=query_params,
+                                                server=server)
         collection = index.split('.')[-1]
-
         for doc in result["results"]:
             value = doc[collection].get(dict_to_add[0].encode())
             if isinstance(value, list):
@@ -139,14 +122,16 @@ class N1qlBase(CollectionBase):
                 self.fail("actual %s and expected value %s are different"
                              % (value, dict_to_add[1]))
 
-    def validate_insert_results(self, index, docs, query_params={}):
+    def validate_insert_results(self, index, docs, query_params={}, server=None):
         # modify this to get values for list of docs
         keys = docs.keys()
         keys = [x.encode('UTF8') for x in keys]
         name = index.split('.')
         query = "SELECT  * from default:`%s`.`%s`.`%s` WHERE META().id in %s"\
                 % (name[0], name[1], name[2], keys)
-        result = self.n1ql_helper.run_cbq_query(query, query_params=query_params)
+        result = self.n1ql_helper.run_cbq_query(query,
+                                                query_params=query_params,
+                                                server=server)
         for doc in result["results"]:
             t = doc.values()[0]
             if t != docs[t["name"]]:
@@ -156,13 +141,15 @@ class N1qlBase(CollectionBase):
             self.fail("Mismatch in result count %s and num keys_inserted %s"
                       % (result["metrics"]["resultCount"], len(keys)))
 
-    def validate_delete_results(self, index, docs, query_params={}):
+    def validate_delete_results(self, index, docs, query_params={}, server=None):
         # modify this to get values for list of docs
         name = index.split('.')
         query = "SELECT  META().id,* from default:`%s`.`%s`.`%s` " \
                 "WHERE META().id in %s"\
                 % (name[0], name[1], name[2], docs)
-        result = self.n1ql_helper.run_cbq_query(query, query_params=query_params)
+        result = self.n1ql_helper.run_cbq_query(query,
+                                                query_params=query_params,
+                                                server=server)
         self.log.info("delete result is %s"%(result["results"]))
         if result["results"]:
             self.fail("Deleted doc is present %s" %(result["results"]))
@@ -186,7 +173,7 @@ class N1qlBase(CollectionBase):
             queries.append(query)
         return queries
 
-    def run_update_query(self, clause, query_params):
+    def run_update_query(self, clause, query_params, server=None):
         name = clause[0].split('.')
         if len(clause) > 5:
             update_query = "UPDATE default:`%s`.`%s`.`%s` USE KEYS %s " \
@@ -197,17 +184,19 @@ class N1qlBase(CollectionBase):
                            "WHERE %s LIMIT 100 RETURNING meta().id"\
                            % (name[0], name[1], name[2], clause[3], clause[2])
         queries = self.get_prepare_stmt(update_query, query_params)
-        result = self.n1ql_helper.run_cbq_query(queries[-1], query_params=query_params)
+        result = self.n1ql_helper.run_cbq_query(queries[-1],
+                                                query_params=query_params,
+                                                server=server)
         if result["status"] == "success":
-            list_docs = [d.get('id').encode() for d in result["results"]]
+            list_docs = copy.deepcopy([d.get('id').encode() for d in result["results"]])
             self.validate_update_results(clause[0], list_docs, clause[3],
-                                         query_params)
+                                         query_params, server)
         else:
             self.fail("delete query failed %s"%queries[-1])
             list_docs = list()
         return list_docs, queries
 
-    def run_insert_query(self, clause, query_params):
+    def run_insert_query(self, clause, query_params, server=None):
         docs = {}
         name = clause[0].split('.')
         select_query = "SELECT DISTINCT t.name AS k1,t " \
@@ -217,13 +206,16 @@ class N1qlBase(CollectionBase):
                 "(KEY k1, value t) %s RETURNING *" \
                 % (name[0], name[1], name[2], select_query)
         queries = self.get_prepare_stmt(query, query_params)
-        result = self.n1ql_helper.run_cbq_query(queries[-1], query_params=query_params)
+        result = self.n1ql_helper.run_cbq_query(queries[-1],
+                                                query_params=query_params,
+                                                server=server)
         if result["status"] == "success":
             for val in result["results"]:
                 t = val.values()[0]
                 key = t["name"]
                 docs[key] = t
-            self.validate_insert_results(clause[0], docs, query_params)
+            self.validate_insert_results(clause[0], docs, query_params,
+                                         server)
         elif N1qlException.DocumentAlreadyExistsException \
                 in str(result["errors"][0]["msg"]):
             docs = {}
@@ -231,7 +223,7 @@ class N1qlBase(CollectionBase):
             self.fail("insert query failed %s"%queries[-1])
         return docs, queries
 
-    def run_delete_query(self, clause, query_params):
+    def run_delete_query(self, clause, query_params, server=None):
         name = clause[0].split('.')
         if len(clause) > 5:
             query = "DELETE FROM default:`%s`.`%s`.`%s` " \
@@ -243,18 +235,24 @@ class N1qlBase(CollectionBase):
                     % (name[0], name[1], name[2], clause[2])
         docs = list()
         queries = self.get_prepare_stmt(query, query_params)
-        result = self.n1ql_helper.run_cbq_query(queries[-1], query_params=query_params)
+        result = self.n1ql_helper.run_cbq_query(queries[-1],
+                                                query_params=query_params,
+                                                server=server)
         if result["status"] == "success":
             docs = [d.get('id').encode() for d in result["results"]]
-            self.validate_delete_results(clause[0], docs, query_params)
+            self.validate_delete_results(clause[0], docs, query_params,
+                                         server)
         else:
             self.fail("delete query failed %s"%queries[-1])
         return docs, queries
 
-    def run_savepoint_query(self, clause, query_params):
+    def run_savepoint_query(self, clause, query_params, server=None):
         query = "SAVEPOINT %s" % clause[1]
-        result = self.n1ql_helper.run_cbq_query(query, query_params=query_params)
-        return result
+        result = self.n1ql_helper.run_cbq_query(query, query_params=query_params,
+                                                server=server)
+        if result["status"] != "success":
+            self.fail("savepoint query failed %s"%query)
+        return query
 
     def get_savepoint_to_verify(self, savepoint):
         savepoint_txn = random.choice(savepoint).split(":")[0]
@@ -264,7 +262,7 @@ class N1qlBase(CollectionBase):
 
     def full_execute_query(self, stmts, commit, query_params={},
                            rollback_to_savepoint=False, write_conflict=False,
-                           issleep=0, N1qlhelper=None, prepare=False):
+                           issleep=0, N1qlhelper=None, prepare=False, server=None):
         """
         1. collection_map will store the values changed for a collection after savepoint
         it will be re-intialized after each savepoint and the values will be copied
@@ -283,6 +281,7 @@ class N1qlBase(CollectionBase):
         savepoint = list()
         collection_map = dict()
         txid = query_params.values()[0]
+        rerun_thread = False
         if N1qlhelper:
             self.n1ql_helper = N1qlhelper
         queries = dict()
@@ -291,7 +290,7 @@ class N1qlBase(CollectionBase):
             for stmt in stmts:
                 clause = stmt.split(":")
                 if clause[0] == "SAVEPOINT":
-                    query = self.run_savepoint_query(clause, query_params)
+                    query = self.run_savepoint_query(clause, query_params, server=server)
                     if clause[1] in str(savepoint):
                         str1 = clause[1] + ":" + str(len(collection_savepoint.keys()))
                         collection_savepoint[str1] = copy.deepcopy(collection_map)
@@ -307,17 +306,17 @@ class N1qlBase(CollectionBase):
                                 {"INSERT": {}, "UPDATE": {}, "DELETE":[]}
                 if clause[1] == "UPDATE":
                     result, query = \
-                        self.run_update_query(clause, query_params)
-                    queries[txid].append(query)
+                        self.run_update_query(clause, query_params, server)
+                    queries[txid].extend(query)
                     collection_map[clause[0]]["UPDATE"][clause[3]] = result
                 if clause[1] == "INSERT":
                     result, query = self.run_insert_query(
-                                            clause, query_params)
+                                            clause, query_params, server)
                     collection_map[clause[0]]["INSERT"].update(result)
                     queries[txid].extend(query)
                 if clause[1] == "DELETE":
                     result, query = self.run_delete_query(
-                                        clause, query_params)
+                                        clause, query_params, server)
                     collection_map[clause[0]]["DELETE"].extend(result)
                     queries[txid].extend(query)
             if issleep:
@@ -328,13 +327,15 @@ class N1qlBase(CollectionBase):
             if rollback_to_savepoint and (len(savepoint) > 0):
                 savepoint = self.get_savepoint_to_verify(savepoint)
                 query, result = self.n1ql_helper.end_txn(query_params, commit,
-                                             savepoint[-1].split(':')[0])
+                                             savepoint[-1].split(':')[0],
+                                             server=server)
                 queries[txid].append(query)
             if commit is False:
                 savepoint = []
                 collection_savepoint = {}
+                query, result = self.n1ql_helper.end_txn(query_params, commit=False,
+                                                         server=server)
                 queries[txid].append(query)
-                query, result = self.n1ql_helper.end_txn(query_params, commit=False)
             else:
                 if (not rollback_to_savepoint) or len(savepoint) == 0:
                     collection_savepoint['last'] = copy.deepcopy(collection_map)
@@ -343,25 +344,28 @@ class N1qlBase(CollectionBase):
                 results = self.n1ql_helper.run_cbq_query(query)
                 self.log.debug(results)
                 queries[txid].append(query)
-                query, result = self.n1ql_helper.end_txn(query_params, commit=True)
+                query, result = self.n1ql_helper.end_txn(query_params, commit=True,
+                                                         server=server)
+                queries[txid].append(query)
                 if isinstance(result, str) or 'errors' in result:
                     #retry the entire transaction
-                    rerun = self.validate_error_during_commit(result,
+                    rerun_thread = self.validate_error_during_commit(result,
                                      collection_savepoint, savepoint)
-                    if rerun:
-                        query_params = self.n1ql_helper.create_txn()
-                        self.full_execute_query(stmts, commit, query_params,
-                             rollback_to_savepoint, write_conflict, issleep)
-                    else:
-                        savepoint = []
-                        collection_savepoint = {}
+#                     if rerun:
+#                         query_params = self.n1ql_helper.create_txn(server=server)
+#                         self.full_execute_query(stmts, commit, query_params,
+#                              rollback_to_savepoint, write_conflict, issleep,
+#                              server=server)
+#                     else:
+                    savepoint = []
+                    collection_savepoint = {}
             if write_conflict and write_conflict_result:
                 collection_savepoint['last'] = copy.deepcopy(write_conflict_result)
                 savepoint.append("last")
         except Exception as e:
             self.log.info(e)
             collection_savepoint = e
-        return collection_savepoint, savepoint, queries
+        return collection_savepoint, savepoint, queries, rerun_thread
 
     def simulate_write_conflict(self, stmts, commit):
         collection_map = {}
@@ -500,6 +504,7 @@ class N1qlBase(CollectionBase):
         5. validate inserted docs
         """
         for collection in bucket_col:
+            self.log.info("validation started for collection %s"%collection)
             gen_load = doc_gen_list[collection]
             self.validate_dict = {}
             self.deleted_key = []
@@ -522,7 +527,7 @@ class N1qlBase(CollectionBase):
                                         mutated[1]
                                 except:
                                     self.validate_dict[t_id].put(mutated[0],
-                                                                 mutated[1])
+                                                                     mutated[1])
             bucket_collection = collection.split('.')
             if buckets:
                 self.buckets = buckets
@@ -541,17 +546,26 @@ class N1qlBase(CollectionBase):
         commit = args[2]
         rollback_to_savepoint = args[3]
         write_conflict = args[4]
+        server = args[5]
         self.log.info("values are %s %s %s %s" % (stmt, commit,
                                                   rollback_to_savepoint,
                                                   write_conflict))
-        collection_savepoint, savepoints, queries = \
+        collection_savepoint, savepoints, queries, rerun_thread = \
             self.full_execute_query(stmt, commit, query_params,
-                                    rollback_to_savepoint, write_conflict)
+                                    rollback_to_savepoint, write_conflict,
+                                    server=server)
+        if rerun_thread:
+            query_params = self.n1ql_helper.create_txn(server=server, txtimeout=1)
+            collection_savepoint, savepoints, queries, rerun_thread = \
+            self.full_execute_query(stmt, commit, query_params,
+                                    rollback_to_savepoint, write_conflict,
+                                    server=server)
         self.log.info("queries executed in txn are %s" % queries)
         return [collection_savepoint, savepoints]
 
     def get_stmt_for_threads(self, collections, doc_type_list, num_commit,
                              num_rollback_to_savepoint=0, num_conflict=0):
+        server=None
         que = Queue.Queue()
         fail = False
         self.threads = []
@@ -578,11 +592,13 @@ class N1qlBase(CollectionBase):
                 self.num_count(num_commit)
             num_conflict, conflict = \
                 self.num_count(num_conflict)
-            query_params = self.n1ql_helper.create_txn()
+            if isinstance(self.n1ql_server, list):
+                server = random.choice(self.n1ql_server)
+            query_params = self.n1ql_helper.create_txn(server=server, txtimeout=1)
             self.threads.append(
                 Thread(target=lambda q, arg1: q.put(self.thread_txn(arg1)),
                        args=(que, [stmt, query_params, commit,
-                                   rollback_to_savepoint, conflict])))
+                                   rollback_to_savepoint, conflict, server])))
 
         for thread in self.threads:
             thread.start()
@@ -613,17 +629,30 @@ class N1qlBase(CollectionBase):
             yield i_list[i:i + n]
 
     def execute_query_and_validate_results(self, stmt, bucket_col, doc_gen_list=None):
-        query_params = self.n1ql_helper.create_txn(self.txtimeout)
-        collection_savepoint, savepoints, queries = \
+        atrcollection = ""
+        if self.atrcollection:
+            collections = BucketUtils.get_random_collections(
+                self.buckets, 1, "all", self.num_buckets)
+            for bucket, scope_dict in collections.items():
+                for s_name, c_dict in scope_dict["scopes"].items():
+                    for c_name, c_data in c_dict["collections"].items():
+                        if random.choice([True, False]):
+                            atrcollection = ("`%s`.`%s`.`%s`"%(bucket, s_name, c_name))
+                        else:
+                            atrcollection = ("`%s`.`%s`.`%s`"%(bucket,
+                                         CbServer.default_scope,
+                                         CbServer.default_collection))
+        query_params = self.n1ql_helper.create_txn(self.txtimeout, self.durability_level,
+                                                   atrcollection)
+        collection_savepoint, savepoints, queries, rerun = \
             self.full_execute_query(stmt, self.commit, query_params,
                                     self.rollback_to_savepoint)
+        self.log.info("queries ran are %s" % queries)
         if not doc_gen_list:
             doc_gen_list = self.n1ql_helper.get_doc_gen_list(bucket_col)
         if isinstance(collection_savepoint, dict):
             results = [[collection_savepoint, savepoints]]
-            self.log.info("queries ran are %s" % queries)
             self.process_value_for_verification(bucket_col,
                                  doc_gen_list, results)
         else:
             self.fail(collection_savepoint)
-

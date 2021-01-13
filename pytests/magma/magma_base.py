@@ -31,10 +31,7 @@ class MagmaBaseTest(BaseTestCase):
                                password=self.cluster.master.rest_password)
 
         nodes_init = self.cluster.servers[1:self.nodes_init]
-
-        self.services = []
-        if nodes_init:
-            self.services = ["kv"]*(self.nodes_init)
+        self.services = ["kv"]*(self.nodes_init)
 
         self.dcp_services = self.input.param("dcp_services", None)
         self.dcp_servers = []
@@ -75,17 +72,32 @@ class MagmaBaseTest(BaseTestCase):
         self.num_scopes = self.input.param("num_scopes", 1)
 
         self.scope_name = CbServer.default_scope
+        # Creation of scopes of num_scopes is > 1
+        scope_prefix = "Scope"
+        for bucket in self.bucket_util.buckets:
+            for i in range(1, self.num_scopes):
+                scope_name = scope_prefix + str(i)
+                self.log.info("Creating bucket::scope {} {}\
+                ".format(bucket.name, scope_name))
+                self.bucket_util.create_scope(self.cluster.master,
+                                          bucket,
+                                          {"name": scope_name})
+                self.sleep(2)
+        self.scopes = self.buckets[0].scopes.keys()
+        self.log.info("Scopes list is {}".format(self.scopes))
+
         collection_prefix = "FunctionCollection"
         # Creation of collection of num_collections is > 1
         for bucket in self.bucket_util.buckets:
-            for i in range(1, self.num_collections):
-                collection_name = collection_prefix + str(i)
-                self.log.info("Creating scope::collection {} {}\
-                ".format(self.scope_name, collection_name))
-                self.bucket_util.create_collection(
-                    self.cluster.master, bucket,
-                    self.scope_name, {"name": collection_name})
-                self.sleep(2)
+            for scope_name in self.scopes:
+                for i in range(1, self.num_collections):
+                    collection_name = collection_prefix + str(i)
+                    self.log.info("Creating scope::collection {} {}\
+                    ".format(scope_name, collection_name))
+                    self.bucket_util.create_collection(
+                        self.cluster.master, bucket,
+                        scope_name, {"name": collection_name})
+                    self.sleep(2)
         self.collections = self.buckets[0].scopes[self.scope_name].collections.keys()
         self.log.debug("Collections list == {}".format(self.collections))
 
@@ -109,7 +121,7 @@ class MagmaBaseTest(BaseTestCase):
             self.max_commit_points = 0
 
         if self.max_commit_points is not None:
-            props += ";magma_max_commit_points={}".format(self.max_commit_points)
+            props += ";magma_max_checkpoints={}".format(self.max_commit_points)
             self.log.debug("props== {}".format(props))
             update_bucket_props = True
 
@@ -283,8 +295,18 @@ class MagmaBaseTest(BaseTestCase):
                                 format(initial_result, final_result))
 
         self.cluster_util.print_cluster_stats()
-        dgm = BucketHelper(self.cluster.master).fetch_bucket_stats(
-            self.buckets[0].name)["op"]["samples"]["vb_active_resident_items_ratio"][-1]
+        dgm = None
+        timeout = 65
+        while dgm is None and timeout > 0:
+            try:
+                stats = BucketHelper(self.cluster.master).fetch_bucket_stats(
+                    self.buckets[0].name)
+                dgm = stats["op"]["samples"]["vb_active_resident_items_ratio"][
+                    -1]
+            except:
+                self.log.debug("Fetching vb_active_resident_items_ratio(dgm) failed...retying")
+                timeout -= 1
+                time.sleep(1)
         self.log.info("## Active Resident Threshold of {0} is {1} ##".format(
             self.buckets[0].name, dgm))
         super(MagmaBaseTest, self).tearDown()

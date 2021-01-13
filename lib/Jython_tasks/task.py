@@ -734,8 +734,8 @@ class GenericLoadingTask(Task):
 
 
 class LoadDocumentsTask(GenericLoadingTask):
-    def __init__(self, cluster, bucket, client, generator, op_type, exp,
-                 exp_unit="seconds", flag=0,
+    def __init__(self, cluster, bucket, client, generator, op_type,
+                 exp, random_exp=False, exp_unit="seconds", flag=0,
                  persist_to=0, replicate_to=0, time_unit="seconds",
                  proxy_client=None, batch_size=1, pause_secs=1, timeout_secs=5,
                  compression=None, retries=5,
@@ -763,6 +763,8 @@ class LoadDocumentsTask(GenericLoadingTask):
         self.generator = generator
         self.op_type = op_type
         self.exp = exp
+        self.abs_exp = self.exp
+        self.random_exp = random_exp
         self.exp_unit = exp_unit
         self.flag = flag
         self.persist_to = persist_to
@@ -787,6 +789,9 @@ class LoadDocumentsTask(GenericLoadingTask):
     def next(self, override_generator=None):
         doc_gen = override_generator or self.generator
         key_value = doc_gen.next_batch(self.op_type)
+        if self.random_exp:
+            self.exp = random.randint(self.abs_exp/2, self.abs_exp)
+            print "EXPIRY SET TO %s" % self.exp
         if self.sdk_client_pool is not None:
             self.client = \
                 self.sdk_client_pool.get_client_for_bucket(self.bucket,
@@ -1408,7 +1413,7 @@ class Durability(Task):
 
 class LoadDocumentsGeneratorsTask(Task):
     def __init__(self, cluster, task_manager, bucket, clients, generators,
-                 op_type, exp, exp_unit="seconds", flag=0,
+                 op_type, exp, exp_unit="seconds", random_exp=False, flag=0,
                  persist_to=0, replicate_to=0, time_unit="seconds",
                  only_store_hash=True, batch_size=1, pause_secs=1,
                  timeout_secs=5, compression=None, process_concurrency=8,
@@ -1425,6 +1430,7 @@ class LoadDocumentsGeneratorsTask(Task):
             % (bucket, scope, collection, task_identifier, time.time()))
         self.cluster = cluster
         self.exp = exp
+        self.random_exp = random_exp
         self.exp_unit = exp_unit
         self.flag = flag
         self.persist_to = persist_to
@@ -1571,7 +1577,8 @@ class LoadDocumentsGeneratorsTask(Task):
         for i in range(0, len(generators)):
             task = LoadDocumentsTask(
                 self.cluster, self.bucket, self.clients[i], generators[i],
-                self.op_type, self.exp, self.exp_unit, self.flag,
+                self.op_type, self.exp, self.random_exp, self.exp_unit,
+                self.flag,
                 persist_to=self.persist_to, replicate_to=self.replicate_to,
                 time_unit=self.time_unit, batch_size=self.batch_size,
                 pause_secs=self.pause_secs, timeout_secs=self.timeout_secs,
@@ -1920,8 +1927,14 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
         self.sdk_client_pool = sdk_client_pool
 
     def _get_bucket_dgm(self, bucket):
-        return self.rest_client.fetch_bucket_stats(
+        """
+        Returns a tuple of (active_rr, replica_rr)
+        """
+        active_resident_items_ratio = self.rest_client.fetch_bucket_stats(
             bucket.name)["op"]["samples"]["vb_active_resident_items_ratio"][-1]
+        replica_resident_items_ratio = self.rest_client.fetch_bucket_stats(
+            bucket.name)["op"]["samples"]["vb_replica_resident_items_ratio"][-1]
+        return active_resident_items_ratio, replica_resident_items_ratio
 
     def _load_next_batch_of_docs(self, bucket):
         doc_gens = list()
@@ -1957,16 +1970,23 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
             self.task_manager.get_task_result(task)
 
     def _load_bucket_into_dgm(self, bucket):
-        dgm_value = self._get_bucket_dgm(bucket)
+        """
+        Load bucket into dgm until either active_rr or replica_rr
+        goes below self.active_resident_threshold
+        """
+        active_dgm_value, replica_dgm_value = self._get_bucket_dgm(bucket)
         self.test_log.info("DGM doc loading for '%s' to atleast %s%%"
                            % (bucket.name, self.active_resident_threshold))
-        while dgm_value > self.active_resident_threshold:
+        while active_dgm_value > self.active_resident_threshold and \
+                replica_dgm_value > self.active_resident_threshold:
             self.test_log.info("Active_resident_items_ratio for {0} is {1}"
-                               .format(bucket.name, dgm_value))
+                               .format(bucket.name, active_dgm_value))
+            self.test_log.info("Replica_resident_items_ratio for {0} is {1}"
+                               .format(bucket.name, replica_dgm_value))
             self._load_next_batch_of_docs(bucket)
-            dgm_value = self._get_bucket_dgm(bucket)
-        self.test_log.info("DGM %s%% achieved for '%s'. Loaded docs: %s"
-                           % (dgm_value, bucket.name,
+            active_dgm_value, replica_dgm_value = self._get_bucket_dgm(bucket)
+        self.test_log.info("Active DGM %s%% Replica DGM %s%% achieved for '%s'. Loaded docs: %s"
+                           % (active_dgm_value, replica_dgm_value, bucket.name,
                               self.docs_loaded_per_bucket[bucket]))
 
     def call(self):
@@ -1975,10 +1995,11 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
         for bucket in self.buckets:
             self.docs_loaded_per_bucket[bucket] = 0
             self._load_bucket_into_dgm(bucket)
-            bucket.scopes[
-                self.scope].collections[
-                self.collection] \
-                .num_items += self.docs_loaded_per_bucket[bucket]
+            collection = bucket.scopes[self.scope].collections[self.collection]
+            collection.num_items += self.docs_loaded_per_bucket[bucket]
+            collection.doc_index = (collection.doc_index[0],
+                                    collection.doc_index[1] +
+                                    self.docs_loaded_per_bucket[bucket])
 
         # Close all SDK clients
         if self.sdk_client_pool is None:
@@ -2883,6 +2904,36 @@ class N1QLQueryTask(Task):
         # catch and set all unexpected exceptions
         except Exception as e:
             self.set_exception(e)
+
+class N1QLTxnQueryTask(Task):
+    def __init__(self, stmts, n1ql_helper,
+                 commit=True,
+                 scan_consistency='REQUEST_PLUS'):
+        super(N1QLTxnQueryTask, self).__init__("query_n1ql_task_%s"
+                                            % (time.time()))
+        self.stmt = stmts
+        self.scan_consistency = scan_consistency
+        self.commit = commit
+        self.n1ql_helper = n1ql_helper
+
+    def call(self):
+        self.start_task()
+        try:
+            # Query and get results
+            self.test_log.info(" <<<<< START Executing N1ql Transaction >>>>>>")
+            sleep(5)
+            self.query_params = self.n1ql_helper.create_txn()
+            for query in self.stmt:
+                result = self.n1ql_helper.run_cbq_query(query,
+                                                        query_params=self.query_params)
+                sleep(2)
+                print result
+            self.n1ql_helper.end_txn(self.query_params, self.commit)
+            self.test_log.debug(" <<<<< Done Executing N1ql Transaction >>>>>>")
+            self.test_log.info("Expected Query to fail but passed")
+        # catch and set all unexpected exceptions
+        except Exception:
+            self.test_log.info(" <<<<< Query Failed as Expected >>>>>>")
 
 class CreateIndexTask(Task):
     def __init__(self, server, bucket, index_name, query, n1ql_helper=None,

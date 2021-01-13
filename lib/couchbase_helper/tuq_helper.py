@@ -14,7 +14,6 @@ from n1ql_exceptions import N1qlException
 from bucket_utils.bucket_ready_functions import BucketUtils
 from random_query_template import WhereClause
 from collections_helper.collections_spec_constants import MetaCrudParams
-from Cb_constants import CbServer
 
 
 class N1QLHelper:
@@ -73,31 +72,22 @@ class N1QLHelper:
             txid = ""
         return txid
 
-    def create_txn(self, txtimeout=0, durability_level=""):
+    def create_txn(self, txtimeout=0, durability_level="", atrcollection="",
+                   server=None):
         query_params = {}
         if durability_level:
             query_params["durability_level"] = durability_level
         if txtimeout:
             query_params["txtimeout"] = str(txtimeout) + "m"
-#         collections = BucketUtils.get_random_collections(
-#                 self.buckets, 1, "all", self.num_buckets)
-#         for bucket, scope_dict in collections.items():
-#             for s_name, c_dict in scope_dict["scopes"].items():
-#                 for c_name, c_data in c_dict["collections"].items():
-# #                     if random.choice([True, False]):
-#                     if False:
-#                         keyspace = ("`%s`.`%s`.`%s`"%(bucket, s_name, c_name))
-#                     else:
-#                         keyspace = ("`%s`.`%s`.`%s`"%(bucket,
-#                                      CbServer.default_scope,
-#                                      CbServer.default_collection))
-#         query_params["atrcollection"] = keyspace
+        if atrcollection:
+            query_params["atrcollection"] = atrcollection
         stmt = "BEGIN WORK"
-        results = self.run_cbq_query(stmt, query_params=query_params)
+        results = self.run_cbq_query(stmt, query_params=query_params,
+                                     server=server)
         txid = self.get_txid(results)
         return {'txid': txid}
 
-    def end_txn(self, query_params, commit, savepoint=""):
+    def end_txn(self, query_params, commit, savepoint="", server=None):
         # query_params = {'txid': txid}
         if savepoint:
             stmt = "ROLLBACK TO SAVEPOINT " + savepoint
@@ -106,7 +96,8 @@ class N1QLHelper:
         else:
             stmt = "ROLLBACK WORK"
         self.log.info("commit work for txn %s"%query_params)
-        result = self.run_cbq_query(stmt, query_params=query_params)
+        result = self.run_cbq_query(stmt, query_params=query_params,
+                                    server=server)
         return stmt, result
 
     def run_cbq_query(self, query=None, min_output_size=10,
@@ -115,9 +106,12 @@ class N1QLHelper:
         if query is None:
             query = ""
         if server is None:
-            server = self.server
+            if isinstance(self.server, list):
+                server = self.server[0]
+            else:
+                server = self.server
         cred_params = {'creds': []}
-        rest = RestConnection(server[0])
+        rest = RestConnection(server)
         if username is None and password is None:
             username = 'Administrator'
             password = 'password'
@@ -164,12 +158,13 @@ class N1QLHelper:
                                    % ex.message)
                     self.log.error("INCORRECT DOCUMENT IS: " + str(result1))
             else:
+                self.log.info("query_params is %s"%query_params)
                 result = rest.query_tool(query, self.n1ql_port,
                                          query_params=query_params,
                                          is_prepared=is_prepared,
                                          named_prepare=self.named_prepare,
                                          encoded_plan=encoded_plan,
-                                         servers=server)
+                                         servers=server, timeout=100)
         else:
             self.shell = RemoteMachineShellConnection(self.cluster.master)
             if self.version == "git_repo":

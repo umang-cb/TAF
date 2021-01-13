@@ -14,6 +14,7 @@ class CbServer(object):
     n1ql_port = 8093
     index_port = 9102
     eventing_port = 8096
+    backup_port = 8097
 
     memcached_port = 11210
     moxi_port = 11211
@@ -22,6 +23,8 @@ class CbServer(object):
     default_collection = "_default"
 
     total_vbuckets = 1024
+
+    max_name_len_scope_collection = 251 # max allowed number of bytes for scope/collection name
 
     # Count excluding the default scope/collection
     max_scopes = 1200

@@ -10,7 +10,6 @@ from global_vars import logger
 from sdk_client3 import SDKClient
 from BucketLib.BucketOperations import BucketHelper
 
-
 """An API for scheduling tasks that run against Couchbase Server
 
 This module is contains the top-level API's for scheduling and executing tasks.
@@ -107,7 +106,8 @@ class ServerTasks(object):
             self.jython_task_manager.add_new_task(task)
         return task
 
-    def async_load_gen_docs(self, cluster, bucket, generator, op_type, exp=0,
+    def async_load_gen_docs(self, cluster, bucket, generator, op_type, 
+                            exp=0, random_exp=False,
                             flag=0, persist_to=0, replicate_to=0,
                             only_store_hash=True, batch_size=1, pause_secs=1,
                             timeout_secs=5, compression=None,
@@ -146,8 +146,9 @@ class ServerTasks(object):
             if not ryow:
                 _task = jython_tasks.LoadDocumentsGeneratorsTask(
                     cluster, self.jython_task_manager, bucket, clients,
-                    [generator], op_type, exp, exp_unit="seconds", flag=flag,
-                    persist_to=persist_to, replicate_to=replicate_to,
+                    [generator], op_type,
+                    exp, random_exp=random_exp, exp_unit="seconds",
+                    flag=flag, persist_to=persist_to, replicate_to=replicate_to,
                     only_store_hash=only_store_hash,
                     batch_size=batch_size, pause_secs=pause_secs,
                     timeout_secs=timeout_secs, compression=compression,
@@ -161,7 +162,7 @@ class ServerTasks(object):
                     monitor_stats=monitor_stats,
                     track_failures=track_failures)
             else:
-                majority_value = (bucket.replicaNumber + 1)/2 + 1
+                majority_value = (bucket.replicaNumber + 1) / 2 + 1
 
                 if durability.lower() == "none":
                     check_persistence = False
@@ -358,7 +359,7 @@ class ServerTasks(object):
                 % (bucket.name,
                    bucket_stat["vb_active_resident_items_ratio"]))
             gen_load = doc_generator(key, num_items,
-                                     num_items+load_batch_size,
+                                     num_items + load_batch_size,
                                      doc_type=doc_type)
             num_items += load_batch_size
             task = self.async_load_gen_docs(
@@ -751,6 +752,32 @@ class ServerTasks(object):
             n1ql_helper=n1ql_helper, server=server, bucket=bucket,
             defer_build=defer_build, index_name=index_name, query=query,
             retry_time=retry_time, timeout=timeout)
+        self.jython_task_manager.add_new_task(_task)
+        return _task
+
+    def async_n1qlTxn_query(self, stmts, n1ql_helper,
+                     commit=True,
+                     scan_consistency='REQUEST_PLUS'):
+        """Asynchronously runs n1ql querya and verifies result if required
+
+        Parameters:
+          server - Server to handle query verification task (TestInputServer)
+          query - Query params being used with the query. (dict)
+          expected_result - expected result after querying
+          is_explain_query - is query explain query
+          index_name - index related to query
+          bucket - Name of the bucket containing items for this view (String)
+          verify_results -  Verify results after query runs successfully
+          retry_time - Seconds to wait before retrying failed queries (int)
+          n1ql_helper - n1ql helper object
+          scan_consistency - consistency value for querying
+          scan_vector - scan vector used for consistency
+        Returns:
+          N1QLQueryTask - A task future that is a handle to the scheduled task
+        """
+        _task = jython_tasks.N1QLTxnQueryTask(stmts=stmts,
+                n1ql_helper=n1ql_helper, commit=commit,
+                 scan_consistency=scan_consistency)
         self.jython_task_manager.add_new_task(_task)
         return _task
 

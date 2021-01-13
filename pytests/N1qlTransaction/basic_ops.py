@@ -105,7 +105,7 @@ class BasicOps(N1qlBase):
                 self.task_manager.get_task_result(task)
         stmts = self.n1ql_helper.get_stmt(bucket_collections)
         self.execute_query_and_validate_results(stmts,
-                                            bucket_collections)
+                                            bucket_collections, doc_gen_list)
 
     def text_txn_same_collection_diff_bucket(self):
         '''
@@ -142,7 +142,7 @@ class BasicOps(N1qlBase):
             self.task_manager.get_task_result(task)
         stmts = self.n1ql_helper.get_stmt(bucket_collections)
         self.execute_query_and_validate_results(stmts,
-                                            bucket_collections)
+                                            bucket_collections, doc_gen_list)
 
     def test_txn_same_keys(self):
         collections = self.n1ql_helper.get_collections()
@@ -173,7 +173,8 @@ class BasicOps(N1qlBase):
         collections = self.n1ql_helper.get_collections()
         self.n1ql_helper.create_index(collections[0])
         name = collections[0].split(".")
-        query_params = self.n1ql_helper.create_txn()
+        query_params = self.n1ql_helper.create_txn(self.txtimeout,
+                                                   self.durability_level)
         query1 = "INSERT INTO default:`%s`.`%s`.`%s` " %(name[0], name[1], name[2])
         query1 += "(KEY, VALUE) VALUES ( 'KEY', 'VALUE') "
         result = self.n1ql_helper.run_cbq_query(query1, query_params=query_params)
@@ -192,7 +193,8 @@ class BasicOps(N1qlBase):
         collections = self.n1ql_helper.get_collections()
         self.n1ql_helper.create_index(collections[0])
         name = collections[0].split(".")
-        query_params = self.n1ql_helper.create_txn()()
+        query_params = self.n1ql_helper.create_txn(self.txtimeout,
+                                                   self.durability_level)
         query1 = "INSERT INTO default:`%s`.`%s`.`%s` " %(name[0], name[1], name[2])
         query1 += "(KEY, VALUE) VALUES ( 'KEY', 'VALUE') "
         result = self.n1ql_helper.run_cbq_query(query1, query_params=query_params)

@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import traceback
 import unittest
 
@@ -106,6 +107,7 @@ class BaseTestCase(unittest.TestCase):
         self.num_items = self.input.param("num_items", 100000)
         self.target_vbucket = self.input.param("target_vbucket", None)
         self.maxttl = self.input.param("maxttl", 0)
+        self.random_exp = self.input.param("random_exp", False)
         self.randomize_doc_size = self.input.param("randomize_doc_size", False)
         self.randomize_value = self.input.param("randomize_value", False)
         self.rev_write = self.input.param("rev_write", False)
@@ -572,7 +574,8 @@ class BaseTestCase(unittest.TestCase):
                 shell.disconnect()
                 rest = RestConnection(server)
                 rest.set_data_path(data_path=server.data_path,
-                                   index_path=server.index_path)
+                                   index_path=server.index_path,
+                                   cbas_path = server.cbas_path)
             init_port = port or server.port or '8091'
             assigned_services = services
             if cluster.master != server:
@@ -684,6 +687,10 @@ class BaseTestCase(unittest.TestCase):
                   that of VM's. Else it won't be possible to compare timestamps
             """
             last_line = grep_output_list[-1]
+            if not re.match(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T", last_line):
+                # To check if line doesn't begin with any yyyy-mm-ddT
+                self.log.critical("%s does not match any timestamp" % last_line)
+                return True
             timestamp = last_line.split()[0]
             timestamp = timestamp.split(".")[0]
             timestamp = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
