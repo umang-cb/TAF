@@ -14,7 +14,9 @@ from bucket_collections.app.constants.collection_spec import collection_spec
 from bucket_collections.app.constants.query import CREATE_INDEX_QUERIES
 from bucket_collections.app.constants.rbac import rbac_data
 from bucket_collections.app.lib import query_util
+from bucket_collections.app.scenarios.airline import Airline
 from bucket_collections.app.scenarios.guest import Guest
+from bucket_collections.app.scenarios.hotel import Hotel
 from bucket_collections.app.scenarios.user import User
 from cb_tools.cbstats import Cbstats
 from membase.api.rest_client import RestConnection
@@ -22,11 +24,17 @@ from remote.remote_util import RemoteMachineShellConnection
 from sdk_client3 import SDKClient
 
 from com.couchbase.client.java.json import JsonObject
+from com.couchbase.client.core.error import IndexFailureException, \
+    InternalServerFailureException
 
 
 class TravelSampleApp(BaseTestCase):
     def setUp(self):
         super(TravelSampleApp, self).setUp()
+
+        self.cluster_conf = self.input.param("cluster_conf", None)
+        self.bucket_conf = self.input.param("bucket_conf", None)
+        self.service_conf = self.input.param("service_conf", None)
 
         self.log_setup_status("TravelSampleApp", "started")
         self.step_num = 1
@@ -34,9 +42,9 @@ class TravelSampleApp(BaseTestCase):
 
         self.rbac_util = RbacUtil()
         self.sdk_clients = global_vars.sdk_clients
+        self.config_path = "pytests/bucket_collections/app/config/"
 
-        cluster_yaml = "pytests/bucket_collections/app/config/cluster.yaml"
-        with open(cluster_yaml, "r") as fp:
+        with open(self.config_path + "cluster.yaml", "r") as fp:
             self.cluster_config = YAML().load(fp.read())
 
         # Override nodes_init, services_init from yaml data
@@ -84,8 +92,11 @@ class TravelSampleApp(BaseTestCase):
             # Configure backup settings
             self.configure_bucket_backups()
 
-            # Create required indexes
+            # Create required GSIs
             self.create_indexes()
+
+            # Create required CBAS data-sets
+            self.create_cbas_indexes()
         else:
             self.bucket = self.bucket_util.buckets[0]
             self.map_collection_data()
@@ -242,10 +253,21 @@ class TravelSampleApp(BaseTestCase):
             s_name, c_name = collection_info[0], collection_info[1]
 
             sdk_client.select_collection(s_name, c_name)
-            query_result = sdk_client.cluster.query(query % d_type)
+            # TODO: Remove this retry logic once MB-41535 is fixed
+            retry_index = 0
+            query_result = None
+            while retry_index < 5:
+                try:
+                    query_result = sdk_client.cluster.query(query % d_type)
+                    break
+                except IndexFailureException:
+                    retry_index += 1
+                    self.sleep(5, "Retrying due to IndexFailure (MB-41535)")
+                    continue
             rows_inserted = 0
             for row in query_result.rowsAsObject():
-                value = row.getObject("travel-sample").removeKey("type")
+                value = row.getObject(CbServer.default_collection)\
+                    .removeKey("type")
 
                 doc_id = value.getInt("id")
                 if doc_id > meta_data[s_name][c_name]["doc_counter"]:
@@ -362,12 +384,20 @@ class TravelSampleApp(BaseTestCase):
         for bucket, b_data in indexes_to_build.items():
             for scope, s_data in b_data.items():
                 for collection, indexes in s_data.items():
-                    build_res = self.sdk_clients["bucket_admin"].cluster.query(
-                        "BUILD INDEX on `%s`.`%s`.`%s`(%s)"
-                        % (bucket, scope, collection, ",".join(indexes)))
-                    if build_res.metaData().status().toString() != "SUCCESS":
-                        self.fail("Build index failed for %s: %s"
-                                  % (indexes, build_res))
+                    try:
+                        build_res = \
+                            self.sdk_clients["bucket_admin"].cluster.query(
+                                "BUILD INDEX on `%s`.`%s`.`%s`(%s)"
+                                % (bucket, scope, collection,
+                                   ",".join(indexes)))
+                        if build_res.metaData().status().toString() \
+                                != "SUCCESS":
+                            self.fail("Build index failed for %s: %s"
+                                      % (indexes, build_res))
+                    except InternalServerFailureException as err:
+                        if "will retry building in the background" \
+                                not in str(err):
+                            raise err
 
         self.log.info("Waiting for indexes to become online")
         start_time = time.time()
@@ -383,6 +413,28 @@ class TravelSampleApp(BaseTestCase):
                     break
                 if time.time() > stop_time:
                     self.fail("Index availability timeout")
+
+    def create_cbas_indexes(self):
+        if self.service_conf is None:
+            return
+        client = self.sdk_clients["cbas_admin"]
+        with open(self.config_path+self.service_conf, "r") as fp:
+            cbas_conf = YAML().load(fp.read())["services"]["cbas"]
+            for data_verse in cbas_conf["dataverses"]:
+                query = "CREATE DATAVERSE %s" % data_verse["name"]
+                result = client.cluster.analyticsQuery(query)
+                if result.metaData().status().toString() != "SUCCESS":
+                    self.fail("Failure during analytics query: %s" % result)
+            for data_set in cbas_conf["datasets"]:
+                query = "CREATE DATASET `%s`.`%s` ON %s " \
+                        % (data_set["dataverse"], data_set["name"],
+                           data_set["on"])
+                if "where" in data_set:
+                    query += "WHERE %s" % data_set["where"]
+
+                result = client.cluster.analyticsQuery(query)
+                if result.metaData().status().toString() != "SUCCESS":
+                    self.fail("Failure during analytics query: %s" % result)
 
     def configure_bucket_backups(self):
         self.cluster_util.update_cluster_nodes_service_list(self.cluster)
@@ -443,11 +495,17 @@ class TravelSampleApp(BaseTestCase):
                                      op_count=20)
             guest_activity_2 = Guest(self.bucket, op_type=random_op,
                                      op_count=20)
+            hotel_activity_1 = Hotel(self.bucket, op_type=random_op,
+                                     op_count=20)
+            airline_activity_1 = Airline(self.bucket, op_type=random_op,
+                                         op_count=20)
 
             tasks.append(user_activity_1)
             tasks.append(guest_activity_1)
             tasks.append(guest_activity_2)
             tasks.append(user_activity_2)
+            tasks.append(hotel_activity_1)
+            tasks.append(airline_activity_1)
 
             # Start all threads
             for task in tasks:

@@ -355,79 +355,6 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         if any(results):
             self.fail("Metadata validation for Datasets failed")
         self.log.info("Test finished")
-    
-    def create_dataset_obj(self, dataset_cardinality=1, bucket_cardinality=1,
-                            enabled_from_KV=False, name_length=30, fixed_length=False,
-                            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
-                            no_of_objs=999999):
-        
-        def create_object(bucket,scope,collection):
-            if not scope:
-                scope = self.bucket_util.get_scope_obj(bucket, "_default")
-            if not collection:
-                collection = self.bucket_util.get_collection_obj(scope, "_default")
-            
-            if enabled_from_KV:
-                dataverse_name = bucket.name + "." + scope.name
-                dataset_name = collection.name 
-            else:
-                dataverse_name = None
-                
-                if dataset_cardinality > 1:
-                    dataverse_name = self.cbas_util_v2.generate_name(
-                        name_cardinality=dataset_cardinality-1, 
-                        max_length=name_length-1, fixed_length=fixed_length)
-                dataset_name = self.cbas_util_v2.generate_name(
-                    name_cardinality=1, max_length=name_length, fixed_length=fixed_length)
-            
-            if dataverse_name:
-                dataverse_obj = self.cbas_util_v2.get_dataverse_obj(dataverse_name)
-                if not dataverse_obj:
-                    dataverse_obj = Dataverse(dataverse_name)
-                    self.cbas_util_v2.dataverses[dataverse_name] = dataverse_obj
-            else:
-                dataverse_obj = self.cbas_util_v2.get_dataverse_obj("Default")
-            
-            dataset_obj = Dataset(
-                name=dataset_name, dataverse_name=dataverse_name, link_name=None, 
-                dataset_source="internal", dataset_properties={},
-                bucket=bucket, scope=scope, collection=collection, 
-                enabled_from_KV=enabled_from_KV, num_of_items=collection.num_items)
-            
-            dataverse_obj.datasets[dataset_obj.full_name] = dataset_obj
-            
-            if enabled_from_KV:
-                if collection.name == "_default":
-                    dataverse_obj.synonyms[bucket.name] = Synonym(
-                        bucket.name, collection.name, dataverse_name, dataverse_name="Default", synonym_on_synonym=False)
-        
-        count = 0
-        for bucket in self.bucket_util.buckets:
-            
-            if bucket.name in exclude_bucket:
-                    continue
-            
-            if bucket_cardinality == 1:
-                count +=1
-                create_object(bucket,None,None)
-            else:
-                active_scopes = self.bucket_util.get_active_scopes(bucket)
-                for scope in active_scopes:
-                    if scope.is_dropped or scope.name in exclude_scope:
-                        continue
-                    
-                    active_collections = self.bucket_util.get_active_collections(bucket, scope.name, only_names=False)
-                    for collection in active_collections:
-                        if collection.is_dropped or collection.name in exclude_collection:
-                            continue
-                        create_object(bucket,scope,collection)
-                        count +=1
-                        if count > no_of_objs:
-                            break
-                    if count > no_of_objs:
-                            break
-            if count > no_of_objs:
-                break
         
     def test_create_dataset(self):
         """
@@ -448,7 +375,8 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         """
         self.log.info("Test started")
         
-        self.create_dataset_obj(
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util,
             dataset_cardinality=self.input.param('cardinality', 1), 
             bucket_cardinality=self.input.param('bucket_cardinality', 3),
             enabled_from_KV=False, 
@@ -544,8 +472,8 @@ class CBASDatasetsAndCollections(CBASBaseTest):
             if not results:
                 self.fail("Error while creating dataverses")
         
-        self.create_dataset_obj(bucket_cardinality=self.input.param('bucket_cardinality', 1),
-                            enabled_from_KV=True)
+        self.cbas_util_v2.create_dataset_obj(self.bucket_util,bucket_cardinality=self.input.param('bucket_cardinality', 1),
+                                             enabled_from_KV=True)
         
         dataset_objs = self.cbas_util_v2.list_all_dataset_objs()
         
@@ -564,6 +492,8 @@ class CBASDatasetsAndCollections(CBASBaseTest):
                         "cbas_entity_name":obj.cbas_entity_name, "cbas_entity_dataverse_name":obj.cbas_entity_dataverse}))
                 elif func_name == self.cbas_util_v2.enable_analytics_from_KV or func_name == self.cbas_util_v2.disable_analytics_from_KV:
                     jobs.put(obj.get_fully_qualified_kv_entity_name(self.input.param('bucket_cardinality', 1)))
+                elif func_name == self.cbas_util_v2.validate_dataverse_in_metadata:
+                    jobs.put(obj.dataverse_name)
         
         
         populate_job_queue(dataset_objs, self.cbas_util_v2.enable_analytics_from_KV)
@@ -595,6 +525,12 @@ class CBASDatasetsAndCollections(CBASBaseTest):
             self.cbas_util_v2.run_jobs_in_parallel(self.cbas_util_v2.disable_analytics_from_KV, jobs, results, 15)
             if not all(results):
                 self.fail("Error while disabling analytics collection from KV")
+            
+            populate_job_queue(dataset_objs, self.cbas_util_v2.validate_dataverse_in_metadata)
+            self.cbas_util_v2.run_jobs_in_parallel(self.cbas_util_v2.validate_dataverse_in_metadata, jobs, results, 15)
+            
+            if not all(results):
+                self.fail("Dataverse got dropped after disabling analytics from KV")
             
             results = []
             
@@ -640,7 +576,7 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         
         bucket_cardinality = self.input.param('bucket_cardinality', 1)
         
-        self.create_dataset_obj(bucket_cardinality=bucket_cardinality,
+        self.cbas_util_v2.create_dataset_obj(self.bucket_util,bucket_cardinality=bucket_cardinality,
                                 enabled_from_KV=True, exclude_collection=exclude_collections, 
                                 no_of_objs=1)
         dataset = self.cbas_util_v2.list_all_dataset_objs()[0]
@@ -752,7 +688,7 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         
         bucket_cardinality = self.input.param('bucket_cardinality', 1)
         
-        self.create_dataset_obj(bucket_cardinality=bucket_cardinality,
+        self.cbas_util_v2.create_dataset_obj(self.bucket_util,bucket_cardinality=bucket_cardinality,
                                 enabled_from_KV=True, exclude_collection=exclude_collections, 
                                 no_of_objs=1)
         dataset = self.cbas_util_v2.list_all_dataset_objs()[0]
@@ -803,22 +739,68 @@ class CBASDatasetsAndCollections(CBASBaseTest):
                                  expected_error=error_msg):
             self.fail("Error while disabling analytics on KV collection")
         
-        self.log.info("Validating whether the dataverse is deleted or not")
-        if not self.cbas_util_v2.validate_dataverse_in_metadata(
-            dataset.dataverse_name):
-            self.fail("Dataverse {0} got deleted after disabling analytics from KV".format(
-                dataset.dataverse_name))
+        if not self.input.param('validate_error', False):
+            self.log.info("Validate dataverse is not deleted")
+            if not self.cbas_util_v2.validate_dataverse_in_metadata(
+                dataset.dataverse_name):
+                self.fail("Dataverse {0} got deleted after disabling analytics from KV".format(
+                    dataset.dataverse_name))
+            
+            self.log.info("Validate dataset is deleted")
+            if self.cbas_util_v2.validate_dataset_in_metadata(dataset.name, dataset.dataverse_name):
+                self.fail("Dataset {0} is still present in Metadata.Dataset".format(
+                    dataset.name))
+            
+            if self.input.param('create_dataset', False):
+                if not self.cbas_util_v2.validate_dataset_in_metadata(
+                    new_dataset_name, dataset.dataverse_name, BucketName=dataset.kv_bucket.name):
+                    self.fail("Explicitly created dataset got deleted after disabling analytics from KV")
+            
+            if self.input.param('create_synonym', False):
+                if not self.cbas_util_v2.validate_synonym_in_metadata(
+                    synonym_name=new_synonym_name, synonym_dataverse_name=dataset.dataverse_name,
+                    cbas_entity_name=dataset.name, cbas_entity_dataverse_name=dataset.dataverse_name):
+                    self.fail("Explicitly created synonym got deleted after disabling analytics from KV")
         
-        if self.input.param('create_dataset', False):
-            if not self.cbas_util_v2.validate_dataset_in_metadata(
-                new_dataset_name, dataset.dataverse_name, BucketName=dataset.kv_bucket.name):
-                self.fail("Explicitly created dataset got deleted after disabling analytics from KV")
+        self.log.info("Test finished")
         
-        if self.input.param('create_synonym', False):
-            if not self.cbas_util_v2.validate_synonym_in_metadata(
-                synonym_name=new_synonym_name, synonym_dataverse_name=dataset.dataverse_name,
-                cbas_entity_name=dataset.name, cbas_entity_dataverse_name=dataset.dataverse_name):
-                self.fail("Explicitly created synonym got deleted after disabling analytics from KV")
+    def test_create_multiple_synonyms(self):
+        self.log.info("Test started")
+        update_spec = {
+            "no_of_dataverses":self.input.param('no_of_dv', 2),
+            "no_of_datasets_per_dataverse":self.input.param('ds_per_dv', 1),
+            "no_of_synonyms":self.input.param('no_of_synonym', 10),
+            "no_of_indexes":0,
+            "max_thread_count":self.input.param('no_of_threads', 1)}
+        self.setup_for_test(update_spec,"dataset")
+        
+        synonyms =  self.cbas_util_v2.list_all_synonym_objs()
+        
+        jobs = Queue()
+        results = list()
+        
+        def consumer_func(job):
+            return job[0](**job[1])
+        
+        def populate_job_queue(func_name):
+            for synonym in synonyms:
+                if func_name == self.cbas_util_v2.validate_synonym_in_metadata:
+                    jobs.put((func_name,{
+                        "synonym_name":synonym.name, "synonym_dataverse_name":synonym.dataverse_name,
+                        "cbas_entity_name":synonym.cbas_entity_name, "cbas_entity_dataverse_name":synonym.cbas_entity_dataverse}))
+                elif func_name == self.cbas_util_v2.validate_synonym_doc_count:
+                    jobs.put((func_name,{
+                        "synonym_full_name":synonym.full_name, "cbas_entity_full_name":synonym.cbas_entity_full_name}))
+        
+        populate_job_queue(self.cbas_util_v2.validate_synonym_in_metadata)
+        self.cbas_util_v2.run_jobs_in_parallel(consumer_func, jobs, results, 15)
+        if not all(results):
+            self.fail("Error while validating synonym in Metadata")
+        
+        populate_job_queue(self.cbas_util_v2.validate_synonym_doc_count)
+        self.cbas_util_v2.run_jobs_in_parallel(consumer_func, jobs, results, 15)
+        if not all(results):
+            self.fail("Error while validating synonym doc count for synonym")
         
         self.log.info("Test finished")
         
@@ -828,170 +810,117 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         Supported Test params -
         :testparam bucket_spec str, KV bucket spec to be used to load buckets, 
         scopes and collections.
-        :testparam cardinality int, accepted values are 1 or 3
-        :testparam bucket_cardinality int, accepted values are between 1 or 3
-        :testparam consider_default_KV_scope, boolean
-        :testparam consider_default_KV_collection boolean
-        :testparam dataset_creation_method str, method to be used to create dataset 
-        on a bucket/collection, accepted values are cbas_dataset, cbas_collection,
-        enable_cbas_from_kv.
-        :testparam no_of_synonym int,
         :testparam dangling_synonym boolean,
         :testparam invalid_dataverse boolean,
-        :testparam new_synonym_name boolean,
+        :testparam synonym_name boolean,
         :testparam synonym_dataverse str, accepted values dataset, new, Default 
         :testparam error str, error msg to validate.
         :testparam validate_error boolean
-        :testparam if_not_exists boolean
         :testparam synonym_on_synonym boolean
         :testparam different_syn_on_syn_dv boolean,
-        :testparam validate_subsequent_error boolean
+        :testparam same_syn_on_syn_name boolean
         :testparam action_on_dataset str, accepted values None, drop, recreate
         :testparam action_on_synonym str, accepted values None, drop, recreate
-        :testparam revalidate boolean,
         :testparam validate_query_error boolean
         :testparam query_error str,
         """
         self.log.info("Test started")
-        dataset_obj = Dataset(
-            bucket_util=self.bucket_util,
-            cbas_util=self.cbas_util,
-            consider_default_KV_scope=self.input.param('consider_default_KV_scope', True), 
-            consider_default_KV_collection=self.input.param('consider_default_KV_collection', True),
-            dataset_name_cardinality=int(self.input.param('cardinality', 1)),
-            bucket_cardinality=int(self.input.param('bucket_cardinality', 1)),
-            random_dataset_name=True
-            )
         
-        self.log.info("Creating dataverse and dataset")
-        dataset_obj.setup_dataset(
-            dataset_creation_method=self.input.param('dataset_creation_method', 
-                                                     "cbas_dataset"))
+        error_msg = self.input.param('error', '')
+        synonym_objs = list()
         
-        for i in range(int(self.input.param('no_of_synonym', 1))):
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3,
+            enabled_from_KV=False, name_length=30, fixed_length=False,
+            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+            no_of_objs=1)
+        ds_obj = self.cbas_util_v2.list_all_dataset_objs()[0]
+        
+        if not self.cbas_util_v2.create_dataset(
+            ds_obj.name, ds_obj.full_kv_entity_name, dataverse_name=ds_obj.dataverse_name):
+            self.fail("Error creating dataset {0}".format(ds_obj.name))
+        
+        if self.input.param('synonym_dataverse', "new") == "new":
+            dv_name = CBASHelper.format_name(self.cbas_util_v2.generate_name(2))
+            if not self.cbas_util_v2.create_dataverse(dv_name):
+                self.fail("Error while creating dataverse")
+        else:
+            dv_name = ds_obj.dataverse_name
+        
+        if self.input.param('synonym_name', "new") == "new":
+            synonym_name = CBASHelper.format_name(self.cbas_util_v2.generate_name(1))
+        else:
+            synonym_name = ds_obj.name
+        
+        if self.input.param('dangling_synonym', False):
+            ds_obj.name = "invalid"
+        if self.input.param('invalid_dataverse', False):
+            dv_name = "invalid"
+        
+        syn_obj = Synonym(synonym_name, ds_obj.name, ds_obj.dataverse_name, dataverse_name=dv_name,
+                          synonym_on_synonym=False)
+        synonym_objs.append(syn_obj)
+        
+        if self.input.param('synonym_on_synonym', False):
+            if self.input.param('different_syn_on_syn_dv', False):
+                dv_name = CBASHelper.format_name(self.cbas_util_v2.generate_name(2))
+                if not self.cbas_util_v2.create_dataverse(dv_name):
+                    self.fail("Error while creating dataverse")
             
-            error_msg = self.input.param('error', '')
-
-            # Negative scenario 
-            if self.input.param('dangling_synonym', False):
-                dataset_obj.name = "invalid"
-                dataset_obj.full_dataset_name = "invalid"
-            elif self.input.param('invalid_dataverse', False):
-                dataset_obj.dataverse = "invalid"
-            elif self.input.param('validate_subsequent_error', False) and\
-             i > 0:
+            if not self.input.param('same_syn_on_syn_name', False):
+                synonym_name = CBASHelper.format_name(self.cbas_util_v2.generate_name(1))
+            new_syn_obj = Synonym(
+                synonym_name, syn_obj.name, syn_obj.dataverse_name, 
+                dataverse_name=dv_name, synonym_on_synonym=True)
+            synonym_objs.append(new_syn_obj)
+        
+        for obj in synonym_objs:
+            if self.input.param('same_syn_on_syn_name', False) and obj.synonym_on_synonym:
                 self.input.test_params.update({"validate_error": True})
-                error_msg = error_msg.format(dataset_obj.synonym_name)
-            # Negative scenario ends
-            
-            
-            self.log.info("Creating synonym")
-            if not dataset_obj.setup_synonym(
-                new_synonym_name=self.input.param('new_synonym_name', True),
-                synonym_dataverse=self.input.param('synonym_dataverse', "Default"),
-                validate_error_msg=self.input.param('validate_error', False),
-                expected_error=error_msg,
-                validate_metadata=True,
-                validate_doc_count=not self.input.param('dangling_synonym', False),
-                if_not_exists=self.input.param('if_not_exists', False)):
+                error_msg = error_msg.format(CBASHelper.unformat_name(synonym_name))
+            if not self.cbas_util_v2.create_analytics_synonym(
+                obj.full_name, obj.cbas_entity_full_name,
+                validate_error_msg=self.input.param('validate_error', False), 
+                expected_error=error_msg):
                 self.fail("Error while creating synonym")
+        
+        if self.input.param("action_on_dataset", None):
+            self.log.info("Dropping Dataset")
+            if not self.cbas_util_v2.drop_dataset(ds_obj.full_name):
+                self.fail("Error while dropping dataset")
             
-            revalidate_synonyms = dict()
-            
-            if self.input.param("synonym_on_synonym", False):
-                self.log.info("Creating synonym on synonym")
-                if self.input.param("different_syn_on_syn_dv", False):
-                    new_synonym_dataverse = dataset_obj.create_name_with_cardinality(2)
-                    # create dataverse if it does not exists.
-                    if not self.cbas_util.validate_dataverse_in_metadata(
-                        new_synonym_dataverse) and not \
-                        self.cbas_util.create_dataverse_on_cbas(
-                        dataverse_name=dataset_obj.format_name(new_synonym_dataverse)):
-                        self.fail("Creation of Dataverse {0} failed".format(
-                            new_synonym_dataverse))
-                else:
-                    new_synonym_dataverse = dataset_obj.synonym_dataverse
-                self.log.info("Creating synonym")
-                new_synonym_name = dataset_obj.create_name_with_cardinality(1)
-                revalidate_synonyms[new_synonym_name] = {
-                    "object_name":dataset_obj.synonym_name,
-                    "object_dataverse":dataset_obj.synonym_dataverse,
-                    "synonym_dataverse":new_synonym_dataverse,
-                    "verify_metadata":True, "verify_doc_count":True}
-                if not self.cbas_util.create_analytics_synonym(
-                    synonym_name=dataset_obj.format_name(new_synonym_name), 
-                    object_name=dataset_obj.format_name(dataset_obj.synonym_dataverse,
-                                                        dataset_obj.synonym_name),
-                    synonym_dataverse=dataset_obj.format_name(new_synonym_dataverse)):
-                    self.fail("Error while creating synonym {0} on synonym {1}".format(
-                        new_synonym_name, dataset_obj.synonym_name))
-            
-            if self.input.param("action_on_dataset", None):
-                self.log.info("Dropping Dataset")
-                if not self.cbas_util.drop_dataset(
-                        dataset_obj.full_dataset_name):
-                    self.fail("Error while dropping dataset")
-                if self.input.param("action_on_dataset", None) == "recreate":
-                    self.log.info("Recreating dataset")
-                    if not dataset_obj.setup_dataset(
-                        dataset_creation_method="cbas_dataset",
-                        create_dataverse=False):
-                        self.fail("Recreating dataset {0} failed".format(
-                            dataset_obj.full_dataset_name))
-                revalidate_synonyms[dataset_obj.synonym_name] = {
-                    "object_name":dataset_obj.name,
-                    "object_dataverse":dataset_obj.dataverse,
-                    "synonym_dataverse":dataset_obj.synonym_dataverse,
-                    "verify_metadata":True, "verify_doc_count":True}
-                if self.input.param("synonym_on_synonym", False):
-                    revalidate_synonyms[dataset_obj.synonym_name]["verify_doc_count"] = False
-            
-            if self.input.param("action_on_synonym", None):
-                self.log.info("Dropping Synonym")
-                if not self.cbas_util.drop_analytics_synonym(
-                    synonym_name=dataset_obj.format_name(dataset_obj.synonym_name), 
-                    synonym_dataverse=dataset_obj.format_name(dataset_obj.synonym_dataverse)):
-                    self.fail("Error while dropping synonym")
-                if self.input.param("action_on_synonym", None) == "recreate":
-                    self.log.info("Recreating synonym")
-                    if not self.cbas_util.create_analytics_synonym(
-                        synonym_name=dataset_obj.format_name(dataset_obj.synonym_name), 
-                        object_name=dataset_obj.full_dataset_name,
-                        synonym_dataverse=dataset_obj.format_name(dataset_obj.synonym_dataverse)):
-                        self.fail("Error while creating synonym {0} on dataset {1}".format(
-                            dataset_obj.synonym_name, dataset_obj.full_dataset_name))
-                    revalidate_synonyms[dataset_obj.synonym_name] = {
-                        "object_name":dataset_obj.name,
-                        "object_dataverse":dataset_obj.dataverse,
-                        "synonym_dataverse":dataset_obj.synonym_dataverse,
-                        "verify_metadata":True, "verify_doc_count":True}
-            
-            if self.input.param("revalidate", False):
-                for synonym_name,synonym_prop in revalidate_synonyms.iteritems():
-                    self.log.info("Validating created Synonym entry in Metadata")
-                    if synonym_prop["verify_metadata"] and not\
-                     self.cbas_util.validate_synonym_in_metadata(
-                        synonym=synonym_name,
-                        synonym_dataverse=synonym_prop["synonym_dataverse"],
-                        object_dataverse=synonym_prop["object_dataverse"], 
-                        object_name=synonym_prop["object_name"]):
-                        self.fail("Synonym metadata entry not created")
-                        
-                    self.log.info(
-                        "Validating whether querying synonym return expected result")
-                    if synonym_prop["verify_doc_count"] and not\
-                     self.cbas_util.validate_synonym_doc_count(
-                        full_synonym_name=dataset_obj.format_name(
-                            synonym_prop["synonym_dataverse"],synonym_name), 
-                        full_dataset_name=dataset_obj.full_dataset_name,
-                        validate_error_msg=self.input.param('validate_query_error', False), 
-                        expected_error=self.input.param(
-                            'query_error', '').format(
-                                Dataset.format_name_for_error(True,synonym_name),
-                                Dataset.format_name_for_error(True,synonym_prop["synonym_dataverse"]))):
-                        self.fail(
-                            "Doc count in Synonym does not match with dataset on which it was created.")
-                    
+            if self.input.param("action_on_dataset", None) == "recreate":
+                self.log.info("Recreating dataset")
+                if not self.cbas_util_v2.create_dataset(
+                    ds_obj.name, ds_obj.full_kv_entity_name, dataverse_name=ds_obj.dataverse_name):
+                    self.fail("Error creating dataset {0}".format(ds_obj.name))
+                if not self.cbas_util_v2.wait_for_ingestion_complete([ds_obj.full_name],ds_obj.num_of_items):
+                    self.fail("data ingestion into dataset failed.")
+        
+        if self.input.param("action_on_synonym", None):
+            self.log.info("Dropping Synonym")
+            if not self.cbas_util_v2.drop_analytics_synonym(syn_obj.full_name):
+                self.fail("Error while dropping synonym")
+            if self.input.param("action_on_synonym", None) == "recreate":
+                self.log.info("Recreating synonym")
+                if not self.cbas_util_v2.create_analytics_synonym(
+                    syn_obj.full_name, syn_obj.cbas_entity_full_name):
+                    self.fail("Error while recreating synonym")
+            else:
+                synonym_objs.remove(syn_obj)
+        
+        if not self.input.param('validate_error', False):
+            for obj in synonym_objs:
+                if not self.cbas_util_v2.validate_synonym_in_metadata(
+                    obj.name, obj.dataverse_name, obj.cbas_entity_name, obj.cbas_entity_dataverse):
+                    self.fail("Error while validating synonym in Metadata")
+                
+                if not self.cbas_util_v2.validate_synonym_doc_count(
+                    obj.full_name, obj.cbas_entity_full_name,
+                    validate_error_msg=self.input.param('validate_query_error', False),
+                    expected_error=self.input.param('query_error', '').format(
+                        CBASHelper.unformat_name(obj.name), obj.dataverse_name)):
+                    self.fail("Error while validating synonym doc count for synonym")                    
         self.log.info("Test finished")
     
     def test_if_not_exists_flag_for_synonym(self):
@@ -1003,23 +932,17 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         """
         self.log.info("Test started")
         self.log.info("Creating synonym")
-        synonym_name = Dataset.create_name_with_cardinality(1)
-        object_name_1 = Dataset.create_name_with_cardinality(1)
-        object_name_2 = Dataset.create_name_with_cardinality(1)
+        synonym_name = CBASHelper.format_name(self.cbas_util_v2.generate_name(1))
+        object_name_1 = CBASHelper.format_name(self.cbas_util_v2.generate_name(1))
+        object_name_2 = CBASHelper.format_name(self.cbas_util_v2.generate_name(1))
         
         for obj_name in [object_name_1, object_name_2]:
-            if not self.cbas_util.create_analytics_synonym(
-                synonym_name=Dataset.format_name(synonym_name), 
-                object_name=Dataset.format_name("Default",obj_name),
-                synonym_dataverse=Dataset.format_name("Default"),
-                if_not_exists=True):
+            if not self.cbas_util_v2.create_analytics_synonym(
+                synonym_name, obj_name, if_not_exists=True):
                 self.fail("Error while creating synonym {0}".format(synonym_name))
         
-        if not self.cbas_util.validate_synonym_in_metadata(
-            synonym=synonym_name,
-            synonym_dataverse="Default",
-            object_dataverse="Default", 
-            object_name=object_name_1):
+        if not self.cbas_util_v2.validate_synonym_in_metadata(
+            synonym_name, "Default", object_name_1, "Default"):
             self.fail("Synonym metadata entry changed with subsequent synonym creation")
         
         self.log.info("Test finished")
@@ -1030,85 +953,53 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         Supported Test params -
         :testparam bucket_spec str, KV bucket spec to be used to load buckets, 
         scopes and collections.
-        :testparam cardinality int, accepted values are 1 or 3
-        :testparam bucket_cardinality int, accepted values are between 1 or 3
-        :testparam consider_default_KV_scope, boolean
-        :testparam consider_default_KV_collection boolean
-        :testparam dataset_creation_method str, method to be used to create dataset 
-        on a bucket/collection, accepted values are cbas_dataset, cbas_collection,
-        enable_cbas_from_kv.
         :testparam dangling_synonym boolean,
         :testparam synonym_on_synonym boolean
         :testparam different_dataverse boolean,
         """
         self.log.info("Test started")
         
-        dataset_obj_1 = Dataset(
-            bucket_util=self.bucket_util,
-            cbas_util=self.cbas_util,
-            consider_default_KV_scope=self.input.param('consider_default_KV_scope', True), 
-            consider_default_KV_collection=self.input.param('consider_default_KV_collection', True),
-            dataset_name_cardinality=int(self.input.param('cardinality', 1)),
-            bucket_cardinality=int(self.input.param('bucket_cardinality', 1)),
-            random_dataset_name=True
-            )
+        synonym_objs = list()
         
-        self.log.info("Creating dataverse and dataset")
-        dataset_obj_1.setup_dataset(
-            dataset_creation_method=self.input.param('dataset_creation_method', 
-                                                     "cbas_dataset"))
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3,
+            enabled_from_KV=False, name_length=30, fixed_length=False,
+            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+            no_of_objs=2)
+        dataset_objs = self.cbas_util_v2.list_all_dataset_objs()
         
-        dataset_obj_2 = Dataset(
-            bucket_util=self.bucket_util,
-            cbas_util=self.cbas_util,
-            consider_default_KV_scope=self.input.param('consider_default_KV_scope', True), 
-            consider_default_KV_collection=self.input.param('consider_default_KV_collection', True),
-            dataset_name_cardinality=int(self.input.param('cardinality', 1)),
-            bucket_cardinality=int(self.input.param('bucket_cardinality', 1)),
-            random_dataset_name=True,
-            exclude_collection=[dataset_obj_1.kv_collection_obj.name])
-        if not self.input.param('dangling_synonym', False):
-            self.log.info("Creating dataverse and dataset")
-            dataset_obj_2.setup_dataset(
-                dataset_creation_method=self.input.param('dataset_creation_method', 
-                                                         "cbas_dataset"))
+        for dataset in dataset_objs:
+            if not self.cbas_util_v2.create_dataset(
+                dataset.name, dataset.full_kv_entity_name, dataverse_name=dataset.dataverse_name):
+                self.fail("Error creating dataset {0}".format(dataset.name))
+            if self.input.param('dangling_synonym', False):
+                break
         
-        self.log.info("Creating synonym")
-        if not self.cbas_util.create_analytics_synonym(
-            synonym_name=Dataset.format_name(dataset_obj_1.name), 
-            object_name=dataset_obj_2.full_dataset_name,
-            synonym_dataverse=Dataset.format_name(dataset_obj_1.dataverse)):
-            self.fail("Error while creating synonym {0} on dataset {1}".format(
-                dataset_obj_1.name, dataset_obj_2.full_dataset_name))
+        syn_obj = Synonym(dataset_objs[0].name, dataset_objs[1].name, dataset_objs[1].dataverse_name, 
+                          dataverse_name=dataset_objs[0].dataverse_name, synonym_on_synonym=False)
+        synonym_objs.append(syn_obj)
         
-        full_synonym_name = Dataset.format_name(
-            dataset_obj_1.dataverse,dataset_obj_1.name)
-        
-        if self.input.param("synonym_on_synonym", False):
-            self.log.info("Creating synonym on synonym")
-            synonym_name=Dataset.create_name_with_cardinality(1)
-            if self.input.param("different_dataverse", False):
-                synonym_dataverse = Dataset.create_name_with_cardinality(2)
-                if not self.cbas_util.create_dataverse_on_cbas(synonym_dataverse):
-                    self.fail("Failed to create dataverse")
+        if self.input.param('synonym_on_synonym', False):
+            if self.input.param('different_syn_on_syn_dv', False):
+                dv_name = CBASHelper.format_name(self.cbas_util_v2.generate_name(2))
+                if not self.cbas_util_v2.create_dataverse(dv_name):
+                    self.fail("Error while creating dataverse")
             else:
-                synonym_dataverse = dataset_obj_1.dataverse
-            
-            if not self.cbas_util.create_analytics_synonym(
-                synonym_name=Dataset.format_name(synonym_name), 
-                object_name=full_synonym_name,
-                synonym_dataverse=Dataset.format_name(synonym_dataverse)):
-                self.fail("Error while creating synonym on synonym")
-            
-            full_synonym_name = Dataset.format_name(synonym_dataverse, synonym_name)
-            
+                dv_name = dataset_objs[0].dataverse_name
+            new_syn_obj = Synonym(
+                self.cbas_util_v2.generate_name(1), syn_obj.name, syn_obj.dataverse_name, 
+                dataverse_name=dv_name, synonym_on_synonym=True)
+            synonym_objs.append(new_syn_obj)
         
-        if not self.cbas_util.validate_synonym_doc_count(
-            full_synonym_name=full_synonym_name, 
-            full_dataset_name=dataset_obj_1.full_dataset_name):
-            self.fail("Querying synonym with same name as dataset, \
-            is returning docs from dataset on which synonym is created\
-             instead of the dataset with the same name.")
+        for obj in synonym_objs:
+            if not self.cbas_util_v2.create_analytics_synonym(
+                obj.full_name, obj.cbas_entity_full_name):
+                self.fail("Error while creating synonym")
+        
+        if not self.cbas_util_v2.validate_synonym_doc_count(
+            syn_obj.full_name, dataset_objs[0].full_name):
+                self.fail("Querying synonym with same name as dataset, is returning docs from dataset on which\
+                 synonym is created instead of the dataset with the same name.")
         
         self.log.info("Test finished")    
     
@@ -1123,44 +1014,39 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         :testparam query_error str,
         """
         self.log.info("Test started")
-        dataset_obj = Dataset(
-            bucket_util=self.bucket_util, cbas_util=self.cbas_util,
-            consider_default_KV_scope=True, 
-            consider_default_KV_collection=True,
-            dataset_name_cardinality=3, bucket_cardinality=3,
-            random_dataset_name=True)
         
-        self.log.info("Creating dataverse and dataset")
-        dataset_obj.setup_dataset(dataset_creation_method= "cbas_dataset")
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3,
+            enabled_from_KV=False, name_length=30, fixed_length=False,
+            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+            no_of_objs=1)
+        ds_obj = self.cbas_util_v2.list_all_dataset_objs()[0]
         
-        synonym_name = Dataset.create_name_with_cardinality(1)
-        self.log.info("Creating synonym")
-        if not self.cbas_util.create_analytics_synonym(
-            synonym_name=Dataset.format_name(synonym_name), 
-            object_name=dataset_obj.full_dataset_name,
-            synonym_dataverse=Dataset.format_name(dataset_obj.dataverse)):
-            self.fail("Error while creating synonym {0} on dataset {1}".format(
-                synonym_name, dataset_obj.full_dataset_name))
+        if not self.cbas_util_v2.create_dataset(
+            ds_obj.name, ds_obj.full_kv_entity_name, dataverse_name=ds_obj.dataverse_name):
+            self.fail("Error creating dataset {0}".format(ds_obj.name))
+        
+        syn_obj = Synonym(self.cbas_util_v2.generate_name(1), ds_obj.name, ds_obj.dataverse_name, 
+                          dataverse_name=ds_obj.dataverse_name, synonym_on_synonym=False)
+        
+        if not self.cbas_util_v2.create_analytics_synonym(
+            syn_obj.full_name, syn_obj.cbas_entity_full_name):
+            self.fail("Error while creating synonym")
         
         if self.input.param('invalid_synonym', False):
-            synonym_name = "invalid"
+            syn_obj.name = "invalid"
         
         self.log.info("Dropping synonym")
-        if not self.cbas_util.drop_analytics_synonym(
-            synonym_name=synonym_name, 
-            synonym_dataverse=Dataset.format_name(dataset_obj.dataverse), 
+        if not self.cbas_util_v2.drop_analytics_synonym(
+            CBASHelper.format_name(syn_obj.dataverse_name, syn_obj.name), 
             validate_error_msg=self.input.param('validate_error', False), 
-            expected_error=self.input.param('error', '').format(synonym_name)):
+            expected_error=self.input.param('error', '').format(syn_obj.name)):
             self.fail("Error while dropping Synonym")
         
         self.log.info("Validate Dataset item count after dropping synonym")
         if not self.input.param('validate_error', False) and not\
-         self.cbas_util.validate_cbas_dataset_items_count(
-             dataset_obj.get_fully_quantified_dataset_name(),
-             Dataset.get_item_count_in_collection(
-                 self.bucket_util,dataset_obj.kv_bucket_obj, 
-                 dataset_obj.kv_scope_obj.name, 
-                 dataset_obj.kv_collection_obj.name)):
+         self.cbas_util_v2.validate_cbas_dataset_items_count(
+             ds_obj.full_name, ds_obj.num_of_items):
             self.fail("Doc count mismatch")
         
         self.log.info("Test finished")
@@ -1228,72 +1114,22 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         """
         self.log.info("Test started")
         
-        dataset_objs = list()
-        bucket = random.choice(self.bucket_util.buckets)
-        bucket_helper = BucketHelper(self.cluster.master)
-        
-        # Create dataset on all KV collections in the bucket.
-        status, content = bucket_helper.list_collections(bucket.name)
-        if not status:
-            self.fail("Failed to fetch all the collections in bucket {0}".format(bucket.name))
-        json_parsed = json.loads(content)
-        
-        for scope in json_parsed["scopes"]:
-            for collection in scope["collections"]:
-                dataset_obj = Dataset(
-                    bucket_util=self.bucket_util,
-                    cbas_util=self.cbas_util,
-                    dataset_name_cardinality=3,
-                    bucket_cardinality=3,
-                    set_kv_entity=False)
-                scope_obj = self.bucket_util.get_scope_obj(bucket, scope["name"])
-                collection_obj = self.bucket_util.get_collection_obj(scope_obj, collection["name"])
-                dataset_obj.set_kv_entity(
-                    kv_bucket_obj=bucket, 
-                    kv_scope_obj=scope_obj, 
-                    kv_collection_obj=collection_obj)
-                if not dataset_obj.setup_dataset():
-                    self.fail("Error while creating dataset {0} on {1}".format(
-                        dataset_obj.get_fully_quantified_dataset_name(),
-                        dataset_obj.get_fully_quantified_kv_entity_name(3)))
-                dataset_objs.append(dataset_obj)
-        
-        if self.input.param('create_ds_on_different_bucket', False):
-            new_dataset_obj = Dataset( 
-                bucket_util=self.bucket_util,
-                cbas_util=self.cbas_util,
-                dataset_name_cardinality=3,
-                bucket_cardinality=3,
-                exclude_bucket=[bucket.name])
-            if not new_dataset_obj.setup_dataset():
-                self.fail("Error while creating dataset {0} on {1}".format(
-                    new_dataset_obj.get_fully_quantified_dataset_name(),
-                    new_dataset_obj.get_fully_quantified_kv_entity_name(3)))
+        if not self.cbas_util_v2.create_datasets_on_all_collections(
+            self.bucket_util, cbas_name_cardinality=3, kv_name_cardinality=3, 
+            remote_datasets=False, max_thread_count=15):
+            self.fail("Error while creating datasets")
             
+        dataset_objs = self.cbas_util_v2.list_all_dataset_objs()
+        
+        bucket = random.choice(self.bucket_util.buckets)
         self.bucket_flush_and_validate(bucket)
         
         for dataset_obj in dataset_objs:
             self.log.info("Validating item count")
-            if not self.cbas_util.validate_cbas_dataset_items_count(
-                dataset_obj.get_fully_quantified_dataset_name(),
-                Dataset.get_item_count_in_collection(
-                    self.bucket_util,dataset_obj.kv_bucket_obj, 
-                    dataset_obj.kv_scope_obj.name, 
-                    dataset_obj.kv_collection_obj.name)):
+            if not self.cbas_util_v2.validate_cbas_dataset_items_count(
+                dataset_obj.full_name, dataset_obj.kv_collection.num_items):
                 self.fail("Data is still present in dataset, even when KV collection\
                 on which the dataset was created was flushed.")
-        
-        if self.input.param('create_ds_on_different_bucket', False):
-            self.log.info("Validating item count in dataset created on a\
-             different bucket than the bucket being flushed")
-            if not self.cbas_util.validate_cbas_dataset_items_count(
-                new_dataset_obj.get_fully_quantified_dataset_name(),
-                Dataset.get_item_count_in_collection(
-                    self.bucket_util,new_dataset_obj.kv_bucket_obj, 
-                    new_dataset_obj.kv_scope_obj.name, 
-                    new_dataset_obj.kv_collection_obj.name)):
-                self.fail("Data is not present in dataset, \
-                after a different bucket was flushed")
         
         self.log.info("Test finished")
     
@@ -1309,56 +1145,50 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         """
         self.log.info("Test started")
         
-        dataset_obj = Dataset(
-            bucket_util=self.bucket_util,
-            cbas_util=self.cbas_util,
-            dataset_name_cardinality=3,
-            bucket_cardinality=3)
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3,
+            enabled_from_KV=False, name_length=30, fixed_length=False,
+            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+            no_of_objs=1)
+        dataset_obj = self.cbas_util_v2.list_all_dataset_objs()[0]
         
-        if not dataset_obj.setup_dataset():
-            self.fail("Error while creating dataset {0} on {1}".format(
-                dataset_obj.get_fully_quantified_dataset_name(),
-                dataset_obj.get_fully_quantified_kv_entity_name(3)))
+        if not self.cbas_util_v2.create_dataset(
+            dataset_obj.name, dataset_obj.full_kv_entity_name, dataverse_name=dataset_obj.dataverse_name):
+            self.fail("Error creating dataset {0}".format(dataset_obj.name))
         
         for i in range(0,int(self.input.param('no_of_flushes', 1))):
-            self.bucket_flush_and_validate(dataset_obj.kv_bucket_obj)
+            self.bucket_flush_and_validate(dataset_obj.kv_bucket)
             self.sleep(10, "Waiting for flush to complete")
             self.log.info("Validating item count in dataset before adding new data in KV")
-            if not self.cbas_util.validate_cbas_dataset_items_count(
-                dataset_obj.get_fully_quantified_dataset_name(),
-                Dataset.get_item_count_in_collection(
-                    self.bucket_util,dataset_obj.kv_bucket_obj, 
-                    dataset_obj.kv_scope_obj.name, 
-                    dataset_obj.kv_collection_obj.name)):
+            if not self.cbas_util_v2.validate_cbas_dataset_items_count(
+                dataset_obj.full_name, dataset_obj.kv_collection.num_items):
                 self.fail("Data is still present in dataset, even when KV collection\
                 on which the dataset was created was flushed.")
+            
             if self.input.param('reload_data', True):
                 self.load_initial_data()
                 self.log.info("Validating item count in dataset after adding new data in KV")
-                if not self.cbas_util.validate_cbas_dataset_items_count(
-                    dataset_obj.get_fully_quantified_dataset_name(),
-                    Dataset.get_item_count_in_collection(
-                        self.bucket_util,dataset_obj.kv_bucket_obj, 
-                        dataset_obj.kv_scope_obj.name, 
-                        dataset_obj.kv_collection_obj.name)):
+                if not self.cbas_util_v2.validate_cbas_dataset_items_count(
+                    dataset_obj.full_name, dataset_obj.kv_collection.num_items):
                     self.fail("Newly added data in KV collection did not get ingested in\
                     dataset after flushing")
+            i += 1
         
         self.log.info("Test finished")
     
     def test_dataset_for_adding_new_docs_while_flushing(self):
         self.log.info("Test started")
         
-        dataset_obj = Dataset(
-            bucket_util=self.bucket_util,
-            cbas_util=self.cbas_util,
-            dataset_name_cardinality=3,
-            bucket_cardinality=3)
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3,
+            enabled_from_KV=False, name_length=30, fixed_length=False,
+            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+            no_of_objs=1)
+        dataset_obj = self.cbas_util_v2.list_all_dataset_objs()[0]
         
-        if not dataset_obj.setup_dataset():
-            self.fail("Error while creating dataset {0} on {1}".format(
-                dataset_obj.get_fully_quantified_dataset_name(),
-                dataset_obj.get_fully_quantified_kv_entity_name(3)))
+        if not self.cbas_util_v2.create_dataset(
+            dataset_obj.name, dataset_obj.full_kv_entity_name, dataverse_name=dataset_obj.dataverse_name):
+            self.fail("Error creating dataset {0}".format(dataset_obj.name))
         
         doc_loading_spec = \
                 self.bucket_util.get_crud_template_from_package("initial_load")
@@ -1367,7 +1197,7 @@ class CBASDatasetsAndCollections(CBASBaseTest):
         threads = list()
         thread1 = Thread(target=self.bucket_flush_and_validate,
                          name="flush_thread",
-                         args=(dataset_obj.kv_bucket_obj,))
+                         args=(dataset_obj.kv_bucket,))
         thread1.start()
         threads.append(thread1)
         self.sleep(5, "Waiting for KV flush to start")
@@ -1382,12 +1212,8 @@ class CBASDatasetsAndCollections(CBASBaseTest):
             thread.join()
         
         self.log.info("Validating item count in dataset")
-        if not self.cbas_util.validate_cbas_dataset_items_count(
-            dataset_obj.get_fully_quantified_dataset_name(),
-            Dataset.get_item_count_in_collection(
-                self.bucket_util,dataset_obj.kv_bucket_obj, 
-                dataset_obj.kv_scope_obj.name, 
-                dataset_obj.kv_collection_obj.name)):
+        if not self.cbas_util_v2.validate_cbas_dataset_items_count(
+            dataset_obj.full_name, dataset_obj.kv_collection.num_items):
             self.fail("Number of docs in dataset does not match docs in KV collection")
         
         self.log.info("Test finished")
@@ -1395,31 +1221,27 @@ class CBASDatasetsAndCollections(CBASBaseTest):
     def test_dataset_when_KV_flushing_during_data_mutation(self):
         self.log.info("Test started")
         
-        dataset_obj = Dataset(
-            bucket_util=self.bucket_util,
-            cbas_util=self.cbas_util,
-            dataset_name_cardinality=3,
-            bucket_cardinality=3)
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3,
+            enabled_from_KV=False, name_length=30, fixed_length=False,
+            exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+            no_of_objs=1)
+        dataset_obj = self.cbas_util_v2.list_all_dataset_objs()[0]
         
-        if not dataset_obj.setup_dataset():
-            self.fail("Error while creating dataset {0} on {1}".format(
-                dataset_obj.get_fully_quantified_dataset_name(),
-                dataset_obj.get_fully_quantified_kv_entity_name(3)))
+        if not self.cbas_util_v2.create_dataset(
+            dataset_obj.name, dataset_obj.full_kv_entity_name, dataverse_name=dataset_obj.dataverse_name):
+            self.fail("Error creating dataset {0}".format(dataset_obj.name))
         
         doc_loading_spec = \
                 self.bucket_util.get_crud_template_from_package("initial_load")
         doc_loading_spec["doc_crud"]["create_percentage_per_collection"] = 50
         
         self.load_initial_data(doc_loading_spec, True)
-        self.bucket_flush_and_validate(dataset_obj.kv_bucket_obj)
+        self.bucket_flush_and_validate(dataset_obj.kv_bucket)
                 
         self.log.info("Validating item count in dataset")
-        if not self.cbas_util.validate_cbas_dataset_items_count(
-            dataset_obj.get_fully_quantified_dataset_name(),
-            Dataset.get_item_count_in_collection(
-                self.bucket_util,dataset_obj.kv_bucket_obj, 
-                dataset_obj.kv_scope_obj.name, 
-                dataset_obj.kv_collection_obj.name)):
+        if not self.cbas_util_v2.validate_cbas_dataset_items_count(
+            dataset_obj.full_name, dataset_obj.kv_collection.num_items):
             self.fail("Number of docs in dataset does not match docs in KV collection")
         
         self.log.info("Test finished")
@@ -1547,8 +1369,9 @@ class CBASDatasetsAndCollections(CBASBaseTest):
     def test_create_secondary_index_on_synonym(self):
         
         self.log.info("Test started")
-        self.create_dataset_obj(
-            dataset_cardinality=3, bucket_cardinality=3, enabled_from_KV=False, no_of_objs=1)
+        self.cbas_util_v2.create_dataset_obj(
+            self.bucket_util, dataset_cardinality=3, bucket_cardinality=3, 
+            enabled_from_KV=False, no_of_objs=1)
         dataset = self.cbas_util_v2.list_all_dataset_objs()[0]
         
         if not self.cbas_util_v2.create_dataset(dataset.name, dataset.full_kv_entity_name, dataset.dataverse_name):

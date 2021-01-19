@@ -1927,6 +1927,82 @@ class Dataset_Util(Link_Util):
                                   async_run=False, consume_from_queue_func=None)
             
         return all(results)
+    
+    def create_dataset_obj(self, bucket_util, dataset_cardinality=1, bucket_cardinality=1,
+                           enabled_from_KV=False, name_length=30, fixed_length=False,
+                           exclude_bucket=[], exclude_scope=[], exclude_collection=[], 
+                           no_of_objs=999999):
+        """
+        Generates dataset objects.
+        """
+        
+        def create_object(bucket,scope,collection):
+            if not scope:
+                scope = bucket_util.get_scope_obj(bucket, "_default")
+            if not collection:
+                collection = bucket_util.get_collection_obj(scope, "_default")
+            
+            if enabled_from_KV:
+                dataverse_name = bucket.name + "." + scope.name
+                dataset_name = collection.name 
+            else:
+                dataverse_name = None
+                
+                if dataset_cardinality > 1:
+                    dataverse_name = self.generate_name(
+                        name_cardinality=dataset_cardinality-1, 
+                        max_length=name_length-1, fixed_length=fixed_length)
+                dataset_name = self.generate_name(
+                    name_cardinality=1, max_length=name_length, fixed_length=fixed_length)
+            
+            if dataverse_name:
+                dataverse_obj = self.get_dataverse_obj(dataverse_name)
+                if not dataverse_obj:
+                    dataverse_obj = Dataverse(dataverse_name)
+                    self.dataverses[dataverse_name] = dataverse_obj
+            else:
+                dataverse_obj = self.get_dataverse_obj("Default")
+            
+            dataset_obj = Dataset(
+                name=dataset_name, dataverse_name=dataverse_name, link_name=None, 
+                dataset_source="internal", dataset_properties={},
+                bucket=bucket, scope=scope, collection=collection, 
+                enabled_from_KV=enabled_from_KV, num_of_items=collection.num_items)
+            
+            dataverse_obj.datasets[dataset_obj.full_name] = dataset_obj
+            
+            if enabled_from_KV:
+                if collection.name == "_default":
+                    dataverse_obj.synonyms[bucket.name] = Synonym(
+                        bucket.name, collection.name, dataverse_name, dataverse_name="Default", synonym_on_synonym=False)
+        
+        count = 0
+        for bucket in bucket_util.buckets:
+            
+            if bucket.name in exclude_bucket:
+                    continue
+            
+            if bucket_cardinality == 1:
+                count +=1
+                create_object(bucket,None,None)
+            else:
+                active_scopes = bucket_util.get_active_scopes(bucket)
+                for scope in active_scopes:
+                    if scope.is_dropped or scope.name in exclude_scope:
+                        continue
+                    
+                    active_collections = bucket_util.get_active_collections(bucket, scope.name, only_names=False)
+                    for collection in active_collections:
+                        if collection.is_dropped or collection.name in exclude_collection:
+                            continue
+                        create_object(bucket,scope,collection)
+                        count +=1
+                        if count > no_of_objs:
+                            break
+                    if count > no_of_objs:
+                            break
+            if count > no_of_objs:
+                break
             
 
 class Synonym_Util(Dataset_Util):

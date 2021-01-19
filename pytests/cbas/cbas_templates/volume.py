@@ -47,7 +47,7 @@ spec = {
         "name_key" : "random",
         # Accepted value is list of property dicts. Dicts should contain link properties for either
         # s3 or couchbase link
-        "properties" : [],
+        "properties" : [{}],
         # Accepted values are list of dataverse names. These are the dataverses where the link will be created.
         "include_dataverses" : [],
         # Accepted values are list of dataverse names. These are the dataverses where the link will not be created.
