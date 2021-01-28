@@ -972,7 +972,8 @@ class CollectionUtils(DocLoaderUtils):
                     col_name = scope_name
                 else:
                     if collection_name is None:
-                        col_name = BucketUtils.get_random_name()
+                        col_name = BucketUtils.get_random_name(
+                            max_length=CbServer.max_collection_name_len)
                     else:
                         col_name = "%s_%s" % (collection_name,
                                               created_collections)
@@ -1146,7 +1147,8 @@ class ScopeUtils(CollectionUtils):
             scope_created = False
             while not scope_created:
                 if scope_name is None:
-                    curr_scope_name = BucketUtils.get_random_name()
+                    curr_scope_name = BucketUtils.get_random_name(
+                        max_length=CbServer.max_scope_name_len)
                 scope_already_exists = \
                     curr_scope_name in bucket.scopes.keys() \
                     and \
@@ -1212,7 +1214,8 @@ class BucketUtils(ScopeUtils):
             raise (Exception(msg))
 
     @staticmethod
-    def get_random_name(invalid_name=False):
+    def get_random_name(invalid_name=False,
+                        max_length=CbServer.max_bucket_name_len):
         """
         API to generate random name which can be used to name
         a bucket/scope/collection
@@ -1228,7 +1231,9 @@ class BucketUtils(ScopeUtils):
             char_set += invalid_chars
 
         rand_name = ""
-        name_len = random.randint(1, 20)
+        now = datetime.datetime.now()
+        postfix = str(now.second) + "-" + str(int(round(now.microsecond, 6)))
+        name_len = random.randint(1, (max_length - len(postfix)))
 
         while rand_name == "":
             rand_name = ''.join(random.choice(char_set)
@@ -1240,8 +1245,6 @@ class BucketUtils(ScopeUtils):
             # Remove if name starts with invalid_start_charset
             elif rand_name[0] in invalid_start_chars:
                 rand_name = ""
-        now = datetime.datetime.now()
-        postfix = str(now.second) + "-" + str(int(round(now.microsecond, 6)))
         rand_name = rand_name + "-" + postfix
         return rand_name
 
@@ -1633,7 +1636,8 @@ class BucketUtils(ScopeUtils):
         # Created extra collection specs which are not provided in spec
         collection_obj_index = len(scope_spec["collections"])
         while collection_obj_index < req_num_collections:
-            collection_name = BucketUtils.get_random_name()
+            collection_name = BucketUtils.get_random_name(
+                max_length=CbServer.max_collection_name_len)
             if collection_name in scope_spec["collections"].keys():
                 continue
             scope_spec["collections"][collection_name] = dict()
@@ -1676,7 +1680,8 @@ class BucketUtils(ScopeUtils):
 
         scope_obj_index = len(scope_spec)
         while scope_obj_index < req_num_scopes:
-            scope_name = BucketUtils.get_random_name()
+            scope_name = BucketUtils.get_random_name(
+                max_length=CbServer.max_scope_name_len)
             if scope_name in \
                     scope_spec.keys():
                 continue
@@ -1759,13 +1764,11 @@ class BucketUtils(ScopeUtils):
         return buckets_spec["buckets"]
 
     def create_bucket_from_dict_spec(self, bucket_name, bucket_spec,
-                                     async_create=True,
-                                     wait_for_collection=2):
+                                     async_create=True):
         task = BucketCreateFromSpecTask(self.task_manager,
                                         self.cluster.master,
                                         bucket_name,
-                                        bucket_spec,
-                                        wait_for_collection)
+                                        bucket_spec)
         self.task_manager.add_new_task(task)
         if not async_create:
             self.task_manager.get_task_result(task)
@@ -1916,7 +1919,8 @@ class BucketUtils(ScopeUtils):
                      Bucket.StorageBackend.magma: 0},
             compression_mode=Bucket.CompressionMode.ACTIVE,
             bucket_durability=BucketDurability[Bucket.DurabilityLevel.NONE],
-            ram_quota=None):
+            ram_quota=None,
+            bucket_name=None):
         success = True
         rest = RestConnection(server)
         info = rest.get_nodes_self()
@@ -1939,7 +1943,9 @@ class BucketUtils(ScopeUtils):
             for key in storage.keys():
                 count = 0
                 while count < storage[key]:
-                    name = "{0}-{1}".format(key, count)
+                    name = "{0}.{1}".format(key, count)
+                    if bucket_name is not None:
+                        name= "{0}{1}".format(bucket_name, count)
                     bucket = Bucket({
                         Bucket.name: name,
                         Bucket.ramQuotaMB: bucket_ram,
@@ -2136,7 +2142,8 @@ class BucketUtils(ScopeUtils):
                             "snap_start and snap_end corruption found!!!")
 
     def _wait_for_stat(self, bucket, stat_map=None,
-                       stat_name="ep_queue_size",
+                       cbstat_cmd="checkpoint",
+                       stat_name="num_items_for_persistence",
                        stat_cond='==',
                        timeout=60):
         """
@@ -2145,22 +2152,22 @@ class BucketUtils(ScopeUtils):
         A utility function that waits for all of the items loaded to be
         persisted and replicated.
 
-        Args:
-          servers - List of all servers in the cluster ([TestInputServer])
-          ep_queue_size - expected ep_queue_size (int)
-          ep_queue_size_cond - condition for comparing (str)
-          check_ep_dcp_items_remaining - to check if replication is complete
-          timeout - Waiting the end of the thread. (str)
+        Arguments:
+        :param bucket: Bucket object used for verification
+        :param stat_map: Dict of node_ip:expected stat value
+        :param cbstat_cmd: cbstat command name to execute
+        :param stat_name: Stat to validate against the expected value
+        :param stat_cond: Binary condition used for validation
+        :param timeout: Waiting the end of the thread. (str)
         """
         tasks = []
-        stat_cmd = "all"
         if stat_map:
             for server, stat_value in stat_map.items():
                 if bucket.bucketType == 'memcached':
                     continue
                 shell_conn = RemoteMachineShellConnection(server)
                 tasks.append(self.task.async_wait_for_stats(
-                    [shell_conn], bucket, stat_cmd,
+                    [shell_conn], bucket, cbstat_cmd,
                     stat_name, stat_cond, stat_value,
                     timeout=timeout))
         for task in tasks:
@@ -2168,10 +2175,12 @@ class BucketUtils(ScopeUtils):
             for shell in task.shellConnList:
                 shell.disconnect()
 
-    def _wait_for_stats_all_buckets(self, ep_queue_size=0,
-                                    ep_queue_size_cond='==',
+    def _wait_for_stats_all_buckets(self, expected_val=0,
+                                    comparison_condition='==',
                                     check_ep_items_remaining=False,
-                                    timeout=500):
+                                    timeout=500,
+                                    cbstat_cmd="checkpoint",
+                                    stat_name="num_items_for_persistence"):
         """
         Waits for queues to drain on all servers and buckets in a cluster.
 
@@ -2186,24 +2195,21 @@ class BucketUtils(ScopeUtils):
           timeout - Waiting the end of the thread. (str)
         """
         tasks = list()
-        stat_cmd = "all"
-        dcp_cmd = "dcp"
-        ep_queue_size_str = 'ep_queue_size'
-        ep_dcp_items_remaining_str = 'ep_dcp_items_remaining'
         for server in self.cluster_util.get_kv_nodes():
             for bucket in self.buckets:
                 if bucket.bucketType == 'memcached':
                     continue
                 shell_conn = RemoteMachineShellConnection(server)
                 tasks.append(self.task.async_wait_for_stats(
-                    [shell_conn], bucket, stat_cmd,
-                    ep_queue_size_str, ep_queue_size_cond, ep_queue_size,
+                    [shell_conn], bucket, cbstat_cmd,
+                    stat_name, comparison_condition, expected_val,
                     timeout=timeout))
                 if check_ep_items_remaining:
+                    dcp_cmd = "dcp"
                     shell_conn = RemoteMachineShellConnection(server)
                     tasks.append(self.task.async_wait_for_stats(
                         [shell_conn], bucket, dcp_cmd,
-                        ep_dcp_items_remaining_str, "==", 0,
+                        'ep_dcp_items_remaining', "==", 0,
                         timeout=timeout))
         for task in tasks:
             self.task.jython_task_manager.get_task_result(task)
@@ -4410,10 +4416,12 @@ class BucketUtils(ScopeUtils):
                                 scope_name=scope.name)
 
     @staticmethod
-    def perform_tasks_from_spec_high_ops(cluster, buckets, input_spec):
+    def perform_tasks_from_spec(cluster, buckets, input_spec):
         """
         Perform Create/Drop/Flush of scopes and collections as specified
         in the input json spec template.
+        Scopes/collections drop/creation is done using threads instead
+        of sequential manner
 
         :param cluster: Cluster object to fetch master node
                         (To create REST connections for bucket operations)
@@ -4464,9 +4472,11 @@ class BucketUtils(ScopeUtils):
                         ops_details["collections_added"][bucket_name] = dict()
                         ops_details["collections_added"][bucket_name][
                             "scopes"] = dict()
-                    created_scope_collection_details = dict()  # {scope_name:{"collections":{collection_name:{}}}}
+                    # {scope_name:{"collections":{collection_name:{}}}}
+                    created_scope_collection_details = dict()
                     for _ in range(scopes_num):
-                        scope_name = BucketUtils.get_random_name()
+                        scope_name = BucketUtils.get_random_name(
+                            max_length=CbServer.max_scope_name_len)
                         ScopeUtils.create_scope(cluster.master,
                                                 bucket,
                                                 {"name": scope_name})
@@ -4476,10 +4486,13 @@ class BucketUtils(ScopeUtils):
                             futures = dict()
                             with requests.Session() as session:
                                 for _ in range(collection_count):
-                                    collection_name = BucketUtils.get_random_name()
-                                    futures[executor.submit(BucketUtils.create_collection, cluster.master,
-                                                            bucket, scope_name, {"name": collection_name},
-                                                            session=session)] = collection_name
+                                    collection_name = BucketUtils.get_random_name(
+                                        max_length=CbServer.max_collection_name_len)
+                                    futures[executor.submit(
+                                        BucketUtils.create_collection,
+                                        cluster.master, bucket, scope_name,
+                                        {"name": collection_name},
+                                        session=session)] = collection_name
                             for future in concurrent.futures.as_completed(futures):
                                 if future.exception() is not None:
                                     raise future.exception()
@@ -4546,7 +4559,8 @@ class BucketUtils(ScopeUtils):
                                                                 bucket_name)
                             scope = sample(ops_spec[bucket_name]["scopes"].keys(),
                                            1)[0]
-                            collection_name = BucketUtils.get_random_name()
+                            collection_name = BucketUtils.get_random_name(
+                                max_length=CbServer.max_collection_name_len)
                             if bucket_name not in net_dict["buckets"]:
                                 net_dict["buckets"][bucket_name] = dict()
                                 net_dict["buckets"][bucket_name]["scopes"] = dict()
@@ -4737,10 +4751,12 @@ class BucketUtils(ScopeUtils):
         return ops_details
 
     @staticmethod
-    def perform_tasks_from_spec(cluster, buckets, input_spec):
+    def perform_tasks_from_spec_old(cluster, buckets, input_spec):
         """
         Perform Create/Drop/Flush of scopes and collections as specified
         in the input json spec template.
+        (Old function that does CRUD on collections in sequential manner)
+        ToDo:Remove this function after a few weekly runs
 
         :param cluster: Cluster object to fetch master node
                         (To create REST connections for bucket operations)

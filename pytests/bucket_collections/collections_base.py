@@ -151,9 +151,6 @@ class CollectionBase(BaseTestCase):
                 clients_per_bucket,
                 compression_settings=self.sdk_compression)
 
-        # TODO: remove this once the bug is fixed
-        self.sleep(120, "MB-38497")
-
         doc_loading_task = \
             self.bucket_util.run_scenario_from_spec(
                 self.task,
@@ -199,6 +196,8 @@ class CollectionBase(BaseTestCase):
                         self.input.param(key)
                 elif key == "bucket_storage":
                     bucket_spec[Bucket.storageBackend] = self.bucket_storage
+                elif key == "compression_mode":
+                    bucket_spec[Bucket.compressionMode] = self.compression_mode
 
     def over_ride_doc_loading_template_params(self, target_spec):
         for key, value in self.input.test_params.items():

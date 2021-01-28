@@ -15,7 +15,7 @@ spec = {
     
     # Accepted values are between 0 to 100, if both have same value or if the total percentage exceeds 100, then both types 
     # of links will be created in equal numbers
-    "percent_of_remote_links":0,
+    "percent_of_remote_links":100,
     "percent_of_external_links":0,
     
     # Accepted values are 1 or any positive int.

@@ -34,11 +34,6 @@ class volume(CollectionBase):
         self.data_load_spec = self.input.param("data_load_spec", "volume_test_load_for_volume_test")
         self.contains_ephemeral = self.input.param("contains_ephemeral", True)
 
-        # the stage at which CRUD for collection level/ document level take place.
-        # "before" - start and finish before rebalance/failover starts at each step
-        # "during" - during rebalance/failover at each step
-        self.data_load_stage = self.input.param("data_load_stage", "during")
-
         self.doc_and_collection_ttl = self.input.param("doc_and_collection_ttl", False)  # For using doc_ttl + coll_ttl
         self.skip_validations = self.input.param("skip_validations", True)
 
@@ -142,7 +137,7 @@ class volume(CollectionBase):
         query = "select state from system:indexes where state='online'"
         result = self.run_cbq_query(query)
         self.log.info("online indexes count: {0}".format(len(result['results'])))
-        self.sleep(600, "Wait after building indexes")
+        self.sleep(60, "Wait after building indexes")
 
     def create_indexes_and_initialize_queries(self):
         """
@@ -191,7 +186,7 @@ class volume(CollectionBase):
                 result = self.run_cbq_query(select_query)
                 if result['status'] != "success":
                     self.log.warn("Query failed: {0}".format(select_query))
-                time.sleep(3)
+                #time.sleep(1)
         self.log.info("Stopping select queries")
 
     # Stopping and restarting the memcached process
@@ -254,10 +249,22 @@ class volume(CollectionBase):
             retry_exceptions.append(SDKException.DurabilityImpossibleException)
         doc_loading_spec[MetaCrudParams.RETRY_EXCEPTIONS] = retry_exceptions
 
+    @staticmethod
+    def set_ignore_exceptions(doc_loading_spec):
+        """
+        Exceptions to be ignored.
+        Ignoring DocumentNotFoundExceptions because there could be race conditons
+        eg: reads or deletes before creates
+        """
+        ignore_exceptions = list()
+        ignore_exceptions.append(SDKException.DocumentNotFoundException)
+        doc_loading_spec[MetaCrudParams.IGNORE_EXCEPTIONS] = ignore_exceptions
+
     def data_load_collection(self, async_load=True, skip_read_success_results=True):
         doc_loading_spec = \
             self.bucket_util.get_crud_template_from_package(self.data_load_spec)
         self.set_retry_exceptions(doc_loading_spec)
+        self.set_ignore_exceptions(doc_loading_spec)
         doc_loading_spec[MetaCrudParams.DURABILITY_LEVEL] = self.durability_level
         doc_loading_spec[MetaCrudParams.SKIP_READ_SUCCESS_RESULTS] = skip_read_success_results
         task = self.bucket_util.run_scenario_from_spec(self.task,
@@ -378,77 +385,47 @@ class volume(CollectionBase):
                 self.reload_data_into_buckets()
             #########################################################################################################################
             self.log.info("Step 5: Rebalance in with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
             rebalance_task = self.rebalance(nodes_in=1, nodes_out=0)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
+            task = self.data_load_collection()
             self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
+            self.wait_for_async_data_load_to_complete(task)
             self.data_validation_collection()
             self.bucket_util.print_bucket_stats()
             #########################################################################################################################
             self.log.info("Step 6: Rebalance Out with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
             rebalance_task = self.rebalance(nodes_in=0, nodes_out=1)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
+            task = self.data_load_collection()
             self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
+            self.wait_for_async_data_load_to_complete(task)
             self.data_validation_collection()
             self.bucket_util.print_bucket_stats()
             #######################################################################################################################
             self.log.info("Step 7: Rebalance In_Out with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
             rebalance_task = self.rebalance(nodes_in=2, nodes_out=1)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
+            task = self.data_load_collection()
             self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
+            self.wait_for_async_data_load_to_complete(task)
             self.data_validation_collection()
             self.bucket_util.print_bucket_stats()
             ########################################################################################################################
             self.log.info("Step 8: Swap with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
             rebalance_task = self.rebalance(nodes_in=1, nodes_out=1)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
+            task = self.data_load_collection()
             self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
+            self.wait_for_async_data_load_to_complete(task)
             self.data_validation_collection()
             self.tasks = []
             self.bucket_util.print_bucket_stats()
             ########################################################################################################################
             self.log.info("Step 9: Updating the bucket replica to 2")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
             bucket_helper = BucketHelper(self.cluster.master)
             for i in range(len(self.bucket_util.buckets)):
                 bucket_helper.change_bucket_props(
                     self.bucket_util.buckets[i], replicaNumber=2)
             rebalance_task = self.rebalance(nodes_in=1, nodes_out=0)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
+            task = self.data_load_collection()
             self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
+            self.wait_for_async_data_load_to_complete(task)
             self.data_validation_collection()
             self.bucket_util.print_bucket_stats()
             ########################################################################################################################
@@ -456,17 +433,11 @@ class volume(CollectionBase):
                 self.log.info("No Memcached kill for ephemeral bucket")
             else:
                 self.log.info("Step 10: Stopping and restarting memcached process")
-                if self.data_load_stage == "before":
-                    task = self.data_load_collection(async_load=False)
-                    if task.result is False:
-                        self.fail("Doc loading failed")
                 rebalance_task = self.task.async_rebalance(self.cluster.servers, [], [], retry_get_process_num=200)
-                if self.data_load_stage == "during":
-                    task = self.data_load_collection()
+                task = self.data_load_collection()
                 self.wait_for_rebalance_to_complete(rebalance_task)
                 self.stop_process()
-                if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
+                self.wait_for_async_data_load_to_complete(task)
                 self.data_validation_collection()
                 self.bucket_util.print_bucket_stats()
             ########################################################################################################################
@@ -478,10 +449,6 @@ class volume(CollectionBase):
                         "Step {0}: {1} Failover a node and {2} that node with data load in parallel".format(step_count,
                                                                                                             failover,
                                                                                                             action))
-                    if self.data_load_stage == "before":
-                        task = self.data_load_collection(async_load=False)
-                        if task.result is False:
-                            self.fail("Doc loading failed")
 
                     self.std_vbucket_dist = self.input.param("std_vbucket_dist", None)
                     std = self.std_vbucket_dist or 1.0
@@ -502,16 +469,15 @@ class volume(CollectionBase):
                     self.chosen = self.cluster_util.pick_nodes(self.cluster.master, howmany=1,
                                                                exclude_nodes=self.exclude_nodes)
 
-                    if self.data_load_stage == "during":
-                        reset_flag = False
-                        if (not self.durability_level) and failover == "Hard":
-                            # Force a durability level to prevent data loss during hard failover
-                            self.log.info("Forcing durability level: MAJORITY")
-                            self.durability_level = "MAJORITY"
-                            reset_flag = True
-                        task = self.data_load_collection()
-                        if reset_flag:
-                            self.durability_level = ""
+                    reset_flag = False
+                    if (not self.durability_level) and failover == "Hard":
+                        # Force a durability level to prevent data loss during hard failover
+                        self.log.info("Forcing durability level: MAJORITY")
+                        self.durability_level = "MAJORITY"
+                        reset_flag = True
+                    task = self.data_load_collection()
+                    if reset_flag:
+                        self.durability_level = ""
 
                     # Mark Node for failover
                     if failover == "Graceful":
@@ -545,8 +511,7 @@ class volume(CollectionBase):
                         self.wait_for_rebalance_to_complete(rebalance_task)
                         self.sleep(10)
 
-                    if self.data_load_stage == "during":
-                        self.wait_for_async_data_load_to_complete(task)
+                    self.wait_for_async_data_load_to_complete(task)
                     self.data_validation_collection()
 
                     kv_nodes = self.cluster_util.get_kv_nodes()
@@ -574,20 +539,14 @@ class volume(CollectionBase):
                     self.bucket_util.print_bucket_stats()
             ########################################################################################################################
             self.log.info("Step 17: Updating the bucket replica to 1")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
             bucket_helper = BucketHelper(self.cluster.master)
             for i in range(len(self.bucket_util.buckets)):
                 bucket_helper.change_bucket_props(
                     self.bucket_util.buckets[i], replicaNumber=1)
             rebalance_task = self.task.async_rebalance(self.cluster.servers, [], [], retry_get_process_num=200)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
+            task = self.data_load_collection()
             self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
+            self.wait_for_async_data_load_to_complete(task)
             self.data_validation_collection()
             self.tasks = []
             self.bucket_util.print_bucket_stats()

@@ -75,12 +75,14 @@ class N1QLHelper:
         return txid
 
     def create_txn(self, txtimeout=0, durability_level="", atrcollection="",
-                   server=None):
+                   server=None, Kvtimeout=None):
         query_params = {}
         if durability_level:
             query_params["durability_level"] = durability_level
         if txtimeout:
             query_params["txtimeout"] = str(txtimeout) + "m"
+        if Kvtimeout:
+            query_params["Kvtimeout"] = str(Kvtimeout) + "s"
         if atrcollection:
             query_params["atrcollection"] = atrcollection
         stmt = "BEGIN WORK"
@@ -238,8 +240,10 @@ class N1QLHelper:
         num_range = num_txn - self.num_insert
         if num_range > 0:
             self.num_update = random.choice(range(num_range))
-        self.num_delete = (num_range - self.num_update)
-        return self.num_insert,self.num_update,self.num_delete
+        num_range = num_range - self.num_update
+        self.num_delete = random.choice(range(num_range))
+        self.num_merge = (num_range - self.num_delete)
+        return self.num_insert, self.num_update, self.num_delete, self.num_merge
 
     def get_collections(self):
         keyspaces = []
@@ -311,7 +315,7 @@ class N1QLHelper:
         for bucket_col in collections:
             stmt.extend(self.clause.get_where_clause(
                 doc_type_list[bucket_col], bucket_col,
-                self.num_insert, self.num_update, self.num_delete))
+                self.num_insert, self.num_update, self.num_delete,self.num_merge))
             self.process_index_to_create(stmt, bucket_col)
         stmt = random.sample(stmt, self.num_stmt_txn)
         stmt = self.add_savepoints(stmt)
