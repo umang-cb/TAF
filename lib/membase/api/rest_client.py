@@ -865,8 +865,8 @@ class RestConnection(object):
         return status
 
     def set_service_memoryQuota(self, service, username='Administrator',
-                                 password='password',
-                                 memoryQuota=256):
+                                password='password',
+                                memoryQuota=256):
         ''' cbasMemoryQuota for cbas service.
             ftsMemoryQuota for fts service.
             indexMemoryQuota for index service.'''
@@ -1554,20 +1554,6 @@ class RestConnection(object):
             self.test_log.error("/analytics/service status:{0},content:{1}".format(
                 status, content))
             raise Exception("Analytics Service API failed")
-
-    def get_buckets_itemCount(self):
-        # get all the buckets
-        bucket_map = {}
-        api = '{0}{1}'.format(self.baseUrl, 'pools/default/buckets?basic_stats=true')
-        status, content, header = self._http_request(api)
-        json_parsed = json.loads(content)
-        if status:
-            for item in json_parsed:
-                bucket_name = item['name']
-                item_count = item['basicStats']['itemCount']
-                bucket_map[bucket_name] = item_count
-        self.test_log.debug(bucket_map)
-        return bucket_map
 
     # returns node data for this host
     def get_nodes_self(self, timeout=120):

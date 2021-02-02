@@ -408,6 +408,9 @@ class CBASHelper(RestConnection):
             password = self.password
         api = self.cbas_base_url + "/analytics/link"
         headers = self._create_headers(username, password)
+        if method.lower() == "get":
+            api += "?{0}".format(params)
+            params = ""
         try:
             status, content, header = self._http_request(
                 api, method, headers=headers, params=params, timeout=timeout)
