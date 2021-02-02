@@ -110,7 +110,7 @@ class CBASRebalance(CBASBaseTest):
                     (random.choice(datasets)).full_name, timeout=300, analytics_timeout=300)
                 if total_items < 0 or mutated_items < 0:
                     self.log.warn("CBAS Query failed")
-                time.sleep(1)
+                time.sleep(3)
         self.cbas_query_thread = threading.Thread(target=inner_func, name="cbas_query")
         self.cbas_query_thread.start()
     
