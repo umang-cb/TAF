@@ -2016,6 +2016,31 @@ class Dataset_Util(Link_Util):
                             break
             if count > no_of_objs:
                 break
+    
+    def validate_docs_in_all_datasets(self, bucket_util):
+        self.refresh_dataset_item_count(bucket_util)
+        datasets = self.list_all_dataset_objs()
+        jobs = Queue()
+        results = list()
+        
+        def consumer_func(job):
+            return job[0](**job[1])
+        
+        for dataset in datasets:
+            jobs.put((self.wait_for_ingestion_complete,
+                      {"dataset_names":[dataset.full_name], "num_items": dataset.num_of_items, "timeout":600}))
+        
+        self.run_jobs_in_parallel(consumer_func, jobs, results, 50, async_run=False)
+        return all(results)
+    
+    def refresh_dataset_item_count(self, bucket_util):
+        datasets = self.list_all_dataset_objs()
+        for dataset in datasets:
+            if dataset.kv_collection:
+                dataset.num_of_items = dataset.kv_collection.num_items
+            else:
+                dataset.num_of_items = bucket_util.get_collection_obj(
+                    bucket_util.get_scope_obj(dataset.kv_bucket, "_default"), "_default").num_items
             
 
 class Synonym_Util(Dataset_Util):
@@ -2516,12 +2541,14 @@ class Index_Util(Synonym_Util):
                 
                 dataverse = None
                 while not dataverse: 
-                    dataverse = random.choice(self.dataverses)
+                    dataverse = random.choice(self.dataverses.values())
                     if index_spec.get("include_dataverses",[]) and CBASHelper.unformat_name(
                         dataverse.name) not in index_spec["include_dataverses"]:
                         dataverse = None
                     if index_spec.get("exclude_dataverses",[]) and CBASHelper.unformat_name(
                         dataverse.name) in index_spec["exclude_dataverses"]:
+                        dataverse = None
+                    if len(dataverse.datasets) == 0:
                         dataverse = None
                 
                 dataset = None
