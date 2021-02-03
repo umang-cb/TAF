@@ -26,6 +26,8 @@ class CBASRebalance(CBASBaseTest):
         self.run_parallel_kv_query = self.input.param("run_kv_queries", False)
         self.run_parallel_cbas_query = self.input.param("run_cbas_queries", False)
         self.vbucket_check = self.input.param("vbucket_check", True)
+        self.query_interval = self.input.param("query_interval", 3)
+        self.no_of_parallel_queries = self.input.param("no_of_parallel_queries", 1)
         
         self.available_servers = list()
         self.available_servers.extend(self.cluster.servers)
@@ -112,7 +114,7 @@ class CBASRebalance(CBASBaseTest):
                     (random.choice(datasets)).full_name, timeout=300, analytics_timeout=300)
                 if total_items < 0 or mutated_items < 0:
                     self.log.warn("CBAS Query failed")
-                time.sleep(3)
+                time.sleep(self.query_interval)
         self.cbas_query_thread = threading.Thread(target=inner_func, name="cbas_query")
         self.cbas_query_thread.start()
     
@@ -136,7 +138,7 @@ class CBASRebalance(CBASBaseTest):
                     result = self.rest.query_tool(query, timeout=600)
                     if result['status'] != "success":
                         self.log.warn("Query failed: {0}".format(query))
-                    time.sleep(3)
+                    time.sleep(self.query_interval)
         self.n1ql_query_thread = threading.Thread(target=inner_func,name="N1QL_query")
         self.n1ql_query_thread.start()
     
@@ -348,45 +350,54 @@ class CBASRebalance(CBASBaseTest):
                 pass
         
         failover_count = 0
-        failover_nodes = []
+        kv_failover_nodes = []
+        cbas_failover_nodes = []
         self.success_kv_failed_over = False
         self.success_cbas_failed_over = False
+        
         # Mark Node for failover
         if failover_type == "Graceful":
-            self.success_kv_failed_over = self.rest.fail_over(cluster_kv_nodes[0], graceful=True)
+            chosen = self.cluster_util.pick_nodes(
+                self.cluster.master, howmany=1, target_node= cluster_kv_nodes[0], exclude_nodes=self.exclude_nodes)
+            self.success_kv_failed_over = self.rest.fail_over(chosen[0].id, graceful=True)
             failover_count += 1
-            failover_nodes.append(cluster_kv_nodes[0])
+            kv_failover_nodes.extend(chosen)
         else:
             if "kv" in service_type:
-                self.success_kv_failed_over = self.rest.fail_over(cluster_kv_nodes[0], graceful=True)
+                chosen = self.cluster_util.pick_nodes(
+                    self.cluster.master, howmany=1, target_node= cluster_kv_nodes[0], exclude_nodes=self.exclude_nodes)
+                self.success_kv_failed_over = self.rest.fail_over(chosen[0].id, graceful=True)
                 failover_count += 1
-                failover_nodes.append(cluster_kv_nodes[0])
+                kv_failover_nodes.extend(chosen)
             if "cbas" in service_type and cluster_cbas_nodes:
-                self.success_cbas_failed_over = self.rest.fail_over(cluster_cbas_nodes[0], graceful=True)
+                chosen = self.cluster_util.pick_nodes(
+                    self.cluster.master, howmany=1, target_node= cluster_cbas_nodes[0], exclude_nodes=self.exclude_nodes)
+                self.success_cbas_failed_over = self.rest.fail_over(chosen[0].id, graceful=True)
                 failover_count += 1
-                failover_nodes.append(cluster_cbas_nodes[0])
+                cbas_failover_nodes.extend(chosen)
         self.sleep(300)
-        self.wait_for_failover_or_assert(self.rest, failover_count)
+        self.wait_for_failover_or_assert(failover_count)
 
         # Perform the action
         if action == "RebalanceOut":
             nodes = self.rest.node_statuses()
             self.rest.rebalance(
-                otpNodes=[node.id for node in nodes], ejectedNodes=[node.ip for node in failover_nodes])
+                otpNodes=[node.id for node in nodes], ejectedNodes=[node.id for node in (kv_failover_nodes + cbas_failover_nodes)])
             # self.sleep(600)
             self.assertTrue(self.rest.monitorRebalance(stop_if_loop=False), msg="Rebalance failed")
-            self.cluster.nodes_in_cluster = list(set(self.cluster.nodes_in_cluster) - set(failover_nodes))
-            self.available_servers += failover_nodes
+            servs_out = [node for node in self.cluster.nodes_in_cluster for fail_node in (kv_failover_nodes + cbas_failover_nodes) if node.ip == fail_node.ip]
+            self.cluster.nodes_in_cluster = list(set(self.cluster.nodes_in_cluster) - set(servs_out))
+            self.available_servers += servs_out
             self.sleep(10)
         else:
             if action == "FullRecovery":
                 if self.success_kv_failed_over:
-                    self.rest.set_recovery_type(otpNode=cluster_kv_nodes[0].id, recoveryType="full")
+                    self.rest.set_recovery_type(otpNode=kv_failover_nodes[0].id, recoveryType="full")
                 if self.success_cbas_failed_over:
-                    self.rest.set_recovery_type(otpNode=cluster_cbas_nodes[0].id, recoveryType="full")
+                    self.rest.set_recovery_type(otpNode=cbas_failover_nodes[0].id, recoveryType="full")
             elif action == "DeltaRecovery":
                 if self.success_kv_failed_over:
-                    self.rest.set_recovery_type(otpNode=cluster_kv_nodes[0].id, recoveryType="delta")
+                    self.rest.set_recovery_type(otpNode=kv_failover_nodes[0].id, recoveryType="delta")
 
             rebalance_task = self.task.async_rebalance(
                 self.cluster.nodes_in_cluster, [], [], retry_get_process_num=200)
