@@ -27,7 +27,7 @@ class CBASRebalance(CBASBaseTest):
         self.run_parallel_cbas_query = self.input.param("run_cbas_queries", False)
         self.vbucket_check = self.input.param("vbucket_check", True)
         
-        self.available_servers = self.servers
+        self.available_servers = self.cluster.servers
         self.exclude_nodes = [self.cluster.master, self.cbas_node]
         self.cluster.nodes_in_cluster = [self.cluster.master, self.cbas_node]
         
