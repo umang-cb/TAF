@@ -243,7 +243,7 @@ class CBASRebalance(CBASBaseTest):
                     kv_nodes_in = 1
                 if cbas_nodes_out > 0:
                     cbas_nodes_in = 1
-                rebalance_task = self.rebalance(self, kv_nodes_in=kv_nodes_in, kv_nodes_out=0, 
+                rebalance_task = self.rebalance(kv_nodes_in=kv_nodes_in, kv_nodes_out=0, 
                                                 cbas_nodes_in=cbas_nodes_in, cbas_nodes_out=0)
                 if not self.wait_for_task_to_complete(rebalance_task):
                     self.fail("Pre-Rebalance failed")
