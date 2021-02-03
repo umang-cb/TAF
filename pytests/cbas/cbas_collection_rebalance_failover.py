@@ -366,13 +366,13 @@ class CBASRebalance(CBASBaseTest):
             if "kv" in service_type:
                 chosen = self.cluster_util.pick_nodes(
                     self.cluster.master, howmany=1, target_node= cluster_kv_nodes[0], exclude_nodes=self.exclude_nodes)
-                self.success_kv_failed_over = self.rest.fail_over(chosen[0].id, graceful=True)
+                self.success_kv_failed_over = self.rest.fail_over(chosen[0].id, graceful=False)
                 failover_count += 1
                 kv_failover_nodes.extend(chosen)
             if "cbas" in service_type and cluster_cbas_nodes:
                 chosen = self.cluster_util.pick_nodes(
                     self.cluster.master, howmany=1, target_node= cluster_cbas_nodes[0], exclude_nodes=self.exclude_nodes)
-                self.success_cbas_failed_over = self.rest.fail_over(chosen[0].id, graceful=True)
+                self.success_cbas_failed_over = self.rest.fail_over(chosen[0].id, graceful=False)
                 failover_count += 1
                 cbas_failover_nodes.extend(chosen)
         self.sleep(300)
