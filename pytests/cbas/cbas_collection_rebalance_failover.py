@@ -49,6 +49,7 @@ class CBASRebalance(CBASBaseTest):
             else:
                 services = ["cbas"]
                 init_cbas_nodes -= 1
+            node_to_initialize.services = services
             self.cluster_util.add_node(node_to_initialize,services,rebalance=False)
             self.cluster.nodes_in_cluster.append(node_to_initialize)
         
