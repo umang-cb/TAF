@@ -238,7 +238,7 @@ class CBASRebalance(CBASBaseTest):
         
         if rebalance_operation in ["rebalance_out", "rebalance_in_out"]:
             # Rebalance in nodes before rebalancing out
-            if len(self.cluster.nodes_in_cluster) > 2:
+            if len(self.cluster.nodes_in_cluster) <= 2:
                 if kv_nodes_out > 0:
                     kv_nodes_in = 1
                 if cbas_nodes_out > 0:
