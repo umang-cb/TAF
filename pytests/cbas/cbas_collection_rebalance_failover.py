@@ -117,14 +117,15 @@ class CBASRebalance(CBASBaseTest):
             cbas_nodes_in=cbas_nodes_in, cbas_nodes_out=cbas_nodes_out)
         
         if self.data_load_stage == "during":
-            task = self.rebalance_util.data_load_collection(
+            data_load_task = self.rebalance_util.data_load_collection(
                 self.doc_spec_name, self.skip_validations, async_load=True)
             
         if not self.rebalance_util.wait_for_rebalance_task_to_complete(rebalance_task):
             self.fail("Rebalance failed")
         
         if self.data_load_stage == "during":
-            if not self.rebalance_util.wait_for_data_load_to_complete(task, self.skip_validations):
+            if not self.rebalance_util.wait_for_data_load_to_complete(
+                data_load_task, self.skip_validations):
                 self.fail("Doc loading failed")
         
         self.rebalance_util.data_validation_collection(
@@ -157,7 +158,7 @@ class CBASRebalance(CBASBaseTest):
                 self.log.info("Forcing durability level: MAJORITY")
                 self.rebalance_util.durability_level = "MAJORITY"
                 reset_flag = True
-            task = self.rebalance_util.data_load_collection(
+            data_load_task = self.rebalance_util.data_load_collection(
                 self.doc_spec_name, self.skip_validations, async_load=True)
             if reset_flag:
                 self.rebalance_util.durability_level = ""
@@ -166,7 +167,7 @@ class CBASRebalance(CBASBaseTest):
             failover_type=failover_type, action=action, service_type=service_type, timeout=7200)
         
         if self.data_load_stage == "during":
-            if not self.rebalance_util.wait_for_data_load_to_complete(task, self.skip_validations):
+            if not self.rebalance_util.wait_for_data_load_to_complete(data_load_task, self.skip_validations):
                 self.fail("Doc loading failed")
         
         self.rebalance_util.data_validation_collection(
