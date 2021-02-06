@@ -225,7 +225,7 @@ class MagmaBaseTest(BaseTestCase):
             self.bucket_util.verify_doc_op_task_exceptions(
                 tasks_info, self.cluster)
             self.bucket_util.log_doc_ops_task_failures(tasks_info)
-            self.bucket_util._wait_for_stats_all_buckets(timeout=1200)
+            self.bucket_util._wait_for_stats_all_buckets(timeout=3600)
             if self.standard_buckets == 1 or self.standard_buckets == self.magma_buckets:
                 for bucket in self.bucket_util.get_all_buckets():
                     disk_usage = self.get_disk_usage(
@@ -266,6 +266,24 @@ class MagmaBaseTest(BaseTestCase):
             self.assertTrue(ready, msg="Wait_for_memcached failed")
 
     def tearDown(self):
+        self.cluster_util.print_cluster_stats()
+        dgm = None
+        timeout = 65
+        while dgm is None and timeout > 0:
+            try:
+                stats = BucketHelper(self.cluster.master).fetch_bucket_stats(
+                    self.buckets[0].name)
+                dgm = stats["op"]["samples"]["vb_active_resident_items_ratio"][
+                    -1]
+            except:
+                self.log.debug("Fetching vb_active_resident_items_ratio(dgm) failed...retying")
+                timeout -= 1
+                time.sleep(1)
+        self.log.info("## Active Resident Threshold of {0} is {1} ##".format(
+            self.buckets[0].name, dgm))
+        super(MagmaBaseTest, self).tearDown()
+
+    def validate_seq_itr(self):
         if self.dcp_services and self.num_collections == 1:
             index_build_q = "SELECT state FROM system:indexes WHERE name='{}';"
             start = time.time()
@@ -277,7 +295,7 @@ class MagmaBaseTest(BaseTestCase):
                     result = True
                     break
                 self.sleep(5)
-            self.assertTrue(result, "Index warmup failed")
+            self.assertTrue(result, "initial_idx Index warmup failed")
             self.final_idx = "final_idx"
             self.final_idx_q = "CREATE INDEX %s on default:`%s`.`%s`.`%s`(body) with \
                 {\"defer_build\": false};" % (self.final_idx,
@@ -285,7 +303,18 @@ class MagmaBaseTest(BaseTestCase):
                                               self.scope_name,
                                               self.collections[0])
             result = self.query_client.query_tool(self.final_idx_q, timeout=3600)
-            self.assertTrue(result["status"] == "success", "Index query failed!")
+            start = time.time()
+            if result["status"] != "success":
+                while start + 300 > time.time():
+                    result = self.query_client.query_tool(
+                        index_build_q.format(self.final_idx), timeout=60)
+                    if result["results"][0]["state"] == "online":
+                        result = True
+                        break
+                    self.sleep(5)
+                self.assertTrue(result, "final_idx Index warmup failed")
+            else:
+                self.assertTrue(result["status"] == "success", "Index query failed!")
             self.sleep(5)
             self.initial_count_q = "Select count(*) as items "\
                 "from default:`{}`.`{}`.`{}` where meta().id like '%%';".format(
@@ -306,7 +335,7 @@ class MagmaBaseTest(BaseTestCase):
                 initial_count = self.query_client.query_tool(
                     self.initial_count_q)["results"][0]["items"]
 
-                self.log.info("## Existing Index item count in %s:%s:%s == %s"
+                self.log.info("## Initial Index item count in %s:%s:%s == %s"
                               % (self.buckets[0].name,
                                  self.scope_name, self.collections[0],
                                  initial_count))
@@ -327,23 +356,6 @@ class MagmaBaseTest(BaseTestCase):
             self.assertTrue(final_count == kv_items,
                             "Indexer failed. KV:{}, Final:{}".
                             format(kv_items, final_count))
-
-        self.cluster_util.print_cluster_stats()
-        dgm = None
-        timeout = 65
-        while dgm is None and timeout > 0:
-            try:
-                stats = BucketHelper(self.cluster.master).fetch_bucket_stats(
-                    self.buckets[0].name)
-                dgm = stats["op"]["samples"]["vb_active_resident_items_ratio"][
-                    -1]
-            except:
-                self.log.debug("Fetching vb_active_resident_items_ratio(dgm) failed...retying")
-                timeout -= 1
-                time.sleep(1)
-        self.log.info("## Active Resident Threshold of {0} is {1} ##".format(
-            self.buckets[0].name, dgm))
-        super(MagmaBaseTest, self).tearDown()
 
     def genrate_docs_basic(self, start, end, target_vbucket=None, mutate=0):
         return doc_generator(self.key, start, end,
@@ -798,16 +810,15 @@ class MagmaBaseTest(BaseTestCase):
                        format(loop_itr, sleep))
 
             for node, shell in connections.items():
-                if graceful:
-                    shell.restart_couchbase()
-                else:
-                    while count > 0:
-                        shell.kill_memcached()
-#                         if "index" in node.services:
-#                             shell.kill_indexer()
-                        self.sleep(3, "Sleep before killing memcached on same node again.")
-                        count -= 1
-                    count = kill_itr
+                if "kv" in node.services:
+                    if graceful:
+                        shell.restart_couchbase()
+                    else:
+                        while count > 0:
+                            shell.kill_memcached()
+                            self.sleep(3, "Sleep before killing memcached on same node again.")
+                            count -= 1
+                        count = kill_itr
 
             result = self.check_coredump_exist(self.cluster.nodes_in_cluster,
                                                force_collect=force_collect)

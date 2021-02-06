@@ -1552,9 +1552,10 @@ class MagmaRollbackTests(MagmaBaseTest):
             for shell in shell_conn:
                 shell.kill_memcached()
             for server in self.cluster.nodes_in_cluster:
-                self.assertTrue(self.bucket_util._wait_warmup_completed(
-                    [server], self.bucket_util.buckets[0],
-                    wait_time=self.wait_timeout * 30))
+                if "kv" in node.services.lower():
+                    self.assertTrue(self.bucket_util._wait_warmup_completed(
+                        [server], self.bucket_util.buckets[0],
+                        wait_time=self.wait_timeout * 30))
             if not load_during_rollback:
                 crash_count = 1
                 while num_crashes > 0:
@@ -1562,9 +1563,10 @@ class MagmaRollbackTests(MagmaBaseTest):
                     for shell in shell_conn[target_active_nodes:]:
                         shell.kill_memcached()
                     for server in self.cluster.nodes_in_cluster[target_active_nodes:]:
-                        self.assertTrue(self.bucket_util._wait_warmup_completed(
-                            [server], self.bucket_util.buckets[0],
-                            wait_time=self.wait_timeout * 5))
+                        if "kv" in node.services.lower():
+                            self.assertTrue(self.bucket_util._wait_warmup_completed(
+                                [server], self.bucket_util.buckets[0],
+                                wait_time=self.wait_timeout * 5))
                     self.sleep(30, "30s sleep after crash")
                     num_crashes -= 1
                     crash_count += 1
@@ -1603,9 +1605,11 @@ class MagmaRollbackTests(MagmaBaseTest):
                 #self.bucket_util.log_doc_ops_task_failures(tasks_in)
             self.log.debug("Iteration == {},State files after killing memCached ".
                            format(i, self.get_state_files(self.buckets[0])))
-
-            for bucket in self.bucket_util.buckets:
-                self.log.debug(cbstats.failover_stats(bucket.name))
+            '''
+            Commenting failover-stats until MB-44103 gets fixed
+            '''
+            #for bucket in self.bucket_util.buckets:
+            #    self.log.debug(cbstats.failover_stats(bucket.name))
 
             ###############################################################
             '''
@@ -1662,6 +1666,7 @@ class MagmaRollbackTests(MagmaBaseTest):
 
         for shell in shell_conn:
             shell.disconnect()
+        self.validate_seq_itr()
 
     def test_rebalance_during_rollback(self):
         '''

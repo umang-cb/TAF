@@ -169,18 +169,17 @@ class RebalanceTask(Task):
 
         cluster_stats = self.rest.get_cluster_stats()
         self.table = TableView(self.test_log.info)
-        self.table.set_headers(["Nodes", "Services", "Status"])
+        self.table.set_headers(["Nodes", "Services", "Version",
+                                "CPU", "Status"])
         node_ips_to_remove = [node.ip for node in to_remove]
         for node, stat in cluster_stats.items():
             node_ip = node.split(':')[0]
+            node_status = "Cluster node"
             if node_ip in node_ips_to_remove:
-                self.table.add_row([node_ip,
-                                    cluster_stats[node]["services"],
-                                    "--- OUT --->"])
-            else:
-                self.table.add_row([node_ip,
-                                    ", ".join(stat["services"]),
-                                    "Cluster node"])
+                node_status = "--- OUT --->"
+            self.table.add_row([node_ip, ", ".join(stat["services"]),
+                                stat["version"], stat["cpu_utilization"],
+                                node_status])
 
     def __str__(self):
         if self.exception:
@@ -249,7 +248,8 @@ class RebalanceTask(Task):
             if self.services is not None:
                 services_for_node = [self.services[node_index]]
                 node_index += 1
-            self.table.add_row([node.ip, services_for_node, "<--- IN ---"])
+            self.table.add_row([node.ip, services_for_node, "", "",
+                                "<--- IN ---"])
             if self.use_hostnames:
                 self.rest.add_node(master.rest_username, master.rest_password,
                                    node.hostname, node.port,
@@ -1890,6 +1890,11 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
                  task_identifier="",
                  doc_key_size=8,
                  doc_size=256,
+                 randomize_doc_size=False,
+                 randomize_value=False,
+                 randomize=False,
+                 mix_key_size=False,
+                 deep_copy=False,
                  sdk_client_pool=None):
         super(LoadDocumentsForDgmTask, self).__init__(
             self, cluster, task_manager, bucket, clients, None,
@@ -1915,6 +1920,11 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
         self.key = key
         self.key_size = doc_key_size
         self.doc_size = doc_size
+        self.randomize_doc_size = randomize_doc_size
+        self.randomize_value = randomize_value
+        self.randomize = randomize
+        self.mix_key_size = mix_key_size
+        self.deep_copy = deep_copy
         self.task_identifier = task_identifier
         self.op_type = "create"
         self.rest_client = BucketHelper(self.cluster.master)
@@ -1945,7 +1955,12 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
         for _ in self.clients:
             doc_gens.append(doc_generator(
                 self.key, self.doc_index, self.doc_index+self.dgm_batch,
-                key_size=self.key_size, doc_size=self.doc_size))
+                key_size=self.key_size, doc_size=self.doc_size,
+                randomize_doc_size=self.randomize_doc_size,
+                randomize_value=self.randomize_value,
+                randomize=self.randomize,
+                mix_key_size=self.mix_key_size,
+                deep_copy=self.deep_copy))
             self.doc_index += self.dgm_batch
             self.docs_loaded_per_bucket[bucket] += self.dgm_batch
 
