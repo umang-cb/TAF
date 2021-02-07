@@ -576,8 +576,7 @@ class volume(BaseTestCase):
     
     #used
     def validate_docs_in_datasets(self):
-        result = self.local_cluster.cbas_util.validate_docs_in_all_datasets()
-        self.assertTrue(result, "Error while validating doc count in datasets")        
+        pass
 
     def test_volume_taf(self):
         self.loop = 0
