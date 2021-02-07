@@ -17,19 +17,19 @@ Remote cluster -
 1 node - KV, and Index
 '''
 
-import threading
 import time
 from math import ceil
 import random
 
-from com.couchbase.client.java import *
-from com.couchbase.client.java.json import *
-from com.couchbase.client.java.query import *
+#from com.couchbase.client.java import *
+#from com.couchbase.client.java.json import *
+#from com.couchbase.client.java.query import *
 
 from collections_helper.collections_spec_constants import MetaConstants, MetaCrudParams
 from membase.api.rest_client import RestConnection
 from TestInput import TestInputSingleton
 from BucketLib.BucketOperations import BucketHelper
+from BucketLib.bucket import Bucket
 from remote.remote_util import RemoteMachineShellConnection
 from error_simulation.cb_error import CouchbaseError
 
@@ -38,23 +38,71 @@ from sdk_exceptions import SDKException
 from basetestcase import BaseTestCase
 from cluster_utils.cluster_ready_functions import ClusterUtils
 from bucket_utils.bucket_ready_functions import BucketUtils
-from testconstants import FTS_QUOTA, CBAS_QUOTA, INDEX_QUOTA, MIN_KV_QUOTA
-from cbas_utils.cbas_utils_v2 import CbasUtil
+from cbas_utils.cbas_utils_v2 import CbasUtil, CBASRebalanceUtil
+import traceback
+from java.lang import Exception as Java_base_exception
 
 
 class volume(BaseTestCase):
-    # will add the __init__ functions after the test has been stabilised
+    """
+    Required test parameters
+    :testparams test_type: (str) accepted value steady_state, rebalance and service_crash 
+    :testparams iterations: (int) no. of times the test has to be repeated.
+    :testparams nodes_init: (int) no. of nodes in local cluster including master.
+    :testparams services_init: (str) services to be used while initializing the clusters. 
+    The services passed here will be used for all the clusters. Ex. - kv:n1ql:index
+    :testparams local_init_services: (str) services to be used while adding nodes to the local cluster. 
+    Ex. - "kv:n1ql-cbas", this means the first node being added (excluding master) will have kv and n1ql service and
+    second node being added will have cbas service.
+    :testparams remote_init_nodes: (int) no. of nodes in remote cluster including master.
+    :testparams remote_init_services: (str) services to be used while adding nodes to the remote cluster.
+    For example see local_init_services.
+    :testparams bucket_spec: (str) bucket spec to be used to create buckets, scopes and collections.
+    :testparams data_load_spec: (str) data load spec to be used to load data
+    :testparams cbas_spec: (str) cbas spec to be used to create CBAS infra
+    :testparams vbucket_check: (boolean) to perform vbucket check or not
+    :testparams contains_ephemeral: (boolean) whether ephemeral buckets need to be created or not
+    :testparams data_load_stage: (str) accepted values - before or during
+    :testparams doc_and_collection_ttl: (boolean)
+    :testparams skip_validations: (boolean)
+    :testparams run_parallel_cbas_query: (boolean) start running cbas queries on a seperate thread in parallel
+    :testparams run_parallel_kv_query: (boolean) start running KV queries on a seperate thread in parallel
+    
+    Test Scaling parameters
+    :testparams override_spec_params: (str) ';' seperated bucket_spec and data_load_spec properties to be updated.
+    :testparams remove_default_collection: (boolean) remove default collections from buckets or not.
+    :testparams replicas: (int) no of replicas of bucket
+    :testparams enable_flush: (boolean) to enable flush on all the buckets.
+    :testparams num_buckets: (int) no. of buckets to be created.
+    :testparams bucket_size: (int) size of bucket in MB. Min bucket size is 100.
+    :testparams num_scopes: (int) no. of scopes per bucket
+    :testparams num_collections: (int) no. of collections per scope
+    :testparams num_items: (int) no. of items per collection
+    :testparams durability: (str)
+    :testparams sdk_timeout: (int)
+    :testparams doc_size: (int) size of each doc.
+    :testparams no_of_dataverses: (int) no. of dataverses to be created
+    :testparams no_of_datasets_per_dataverse: (int) no. of datasets per dataverse
+    :testparams no_of_links: (int) no. of remote links
+    :testparams no_of_synonyms: (int) no. of synonyms
+    :testparams no_of_indexes: (int) no. of indexes on datasets
+    :testparams 
+    :testparams 
+    """
+    
     def setUp(self):
         self.input = TestInputSingleton.input
         self.input.test_params.update({"default_bucket": False})
         super(volume, self).setUp()
         
+        self.test_type = self.input.param("test_type", "steady_state")
         self.iterations = self.input.param("iterations", 2)
         self.vbucket_check = self.input.param("vbucket_check", True)
         
         self.bucket_spec = self.input.param("bucket_spec", "volume_templates.buckets_for_volume_test")
         self.data_load_spec = self.input.param("data_load_spec", "volume_test_load_for_volume_test")
         self.cbas_spec = self.input.param("cbas_spec", "volume")
+        self.bucket_size = self.input.param("bucket_size", 0)
         
         self.contains_ephemeral = self.input.param("contains_ephemeral", True)
 
@@ -65,61 +113,56 @@ class volume(BaseTestCase):
 
         self.doc_and_collection_ttl = self.input.param("doc_and_collection_ttl", False)  # For using doc_ttl + coll_ttl
         self.skip_validations = self.input.param("skip_validations", True)
-
-        # Services to be added on rebalance-in nodes during the volume test
-        self.services_for_rebalance_in = self.input.param("services_for_rebalance_in", None)
         
         # Assuming that only 2 clusters are used
         self.local_cluster = None
         self.remote_cluster = None
-        self.available_servers = self.servers[:]
-        self.exclude_nodes = list()
-        self.number_of_indexes = self.input.param("number_of_indexes", 0)
+        CBASRebalanceUtil.available_servers = self.servers[:]
+        CBASRebalanceUtil.exclude_nodes = list()
         
         # Adding nodes in clusters, creating indexes, loading data in collections and creating cbas infra
         for cluster in self.get_clusters():
+            cluster.nodes_in_cluster = [cluster.master]
             cluster.cluster_util = ClusterUtils(cluster, self.task_manager)
             cluster.bucket_util = BucketUtils(cluster,
                                               cluster.cluster_util,
                                               self.task)
             cluster.rest = RestConnection(cluster.master)
             cluster.cbas_nodes = list()
+            cluster.bucket_helper_obj = BucketHelper(cluster.master)
             
-            for node in self.available_servers:
+            for node in CBASRebalanceUtil.available_servers:
                 if node.ip == cluster.master.ip:
-                    self.available_servers.remove(node)
+                    CBASRebalanceUtil.available_servers.remove(node)
                     break
-            self.exclude_nodes.append(cluster.master)
+            CBASRebalanceUtil.exclude_nodes.append(cluster.master)
                     
             def get_init_services(services_to_use):
                 services = list()
                 for service in services_to_use.split("-"):
                     services.append(service.replace(":", ","))
-                return services[1:] if len(services) > 1 else None
+                return services if len(services) > 0 else None
             
             if not self.local_cluster:
                 self.local_cluster = cluster
-                if self.services_init:
-                    services_to_use = get_init_services(self.services_init)
-                else:
-                    services_to_use = get_init_services("kv-cbas")
+                services_to_use = get_init_services(self.input.param("local_init_services", "cbas"))
                 init_nodes = self.nodes_init
             else:
                 self.remote_cluster = cluster
-                services_to_use = get_init_services(self.input.param("remote_init_services", "kv:n1ql:index-kv:index"))
+                services_to_use = get_init_services(self.input.param("remote_init_services", "kv:index"))
                 init_nodes = self.input.param("remote_init_nodes", 1)
             
             # reduce init node by 1 as 1 node will be used while initializing cluster
             init_nodes -= 1
             
             for i in range(0, init_nodes):
-                node_to_initialize = self.available_servers.pop(-1)
+                node_to_initialize = CBASRebalanceUtil.available_servers.pop(-1)
                 services = services_to_use.pop(0)
                 services = services.split(",")
                 
                 node_rest = RestConnection(node_to_initialize)
                 info = node_rest.get_nodes_self()
-                total_free_memory = int((info.memoryFree // 1024 ** 2))
+                total_free_memory = int(info.mcdMemoryReserved)
                 
                 if "kv" in services:
                     self.set_memory_quota(cluster, False, total_free_memory)
@@ -127,42 +170,49 @@ class volume(BaseTestCase):
                     self.set_memory_quota(cluster, True, total_free_memory)
                     cluster.cbas_nodes.append(node_to_initialize)
                 
-                cluster.cluster_util.add_node(node_to_initialize,services)
-                cluster.servers.append(node_to_initialize)
-            
-            self.collectionSetUp(cluster, cluster.bucket_util, cluster.cluster_util)
-            cluster.bucket_util._expiry_pager(val=5)
-            
-            # Initialize parameters for index querying
-            cluster.n1ql_nodes = None
-            cluster.flush_buckets_before_indexes_creation = False
-            if self.number_of_indexes > 0:
-                cluster.flush_buckets_before_indexes_creation = self.input.param(
-                    "flush_buckets_before_indexes_creation", True)
-                if cluster.flush_buckets_before_indexes_creation:
-                    cluster.bucket_util.flush_all_buckets(cluster.master, skip_resetting_num_items=True)
-                self.set_memory_quota(cluster)
-                cluster.n1ql_nodes = cluster.cluster_util.get_nodes_from_services_map(
-                    service_type="n1ql", get_all_nodes=True, servers=cluster.servers,
-                    master=cluster.master)
-                cluster.n1ql_rest_connections = list()
-                for n1ql_node in cluster.n1ql_nodes:
-                    cluster.n1ql_rest_connections.append(RestConnection(n1ql_node))
-                    if n1ql_node not in self.exclude_nodes:
-                        self.exclude_nodes.append(n1ql_node)
-                cluster.n1ql_turn_counter = 0  # To distribute the turn of using n1ql nodes for query. Start with first node
-                indexes_to_build = self.create_indexes_and_initialize_queries(cluster)
-                self.build_deferred_indexes(cluster, indexes_to_build)
-            cluster.query_thread_flag = False
-            cluster.query_thread = None
+                cluster.cluster_util.add_node(node_to_initialize,services,rebalance=False)
+                cluster.nodes_in_cluster.append(node_to_initialize)
+                do_rebalance = True
         
-        self.local_cluster.cbas_util = CbasUtil(self.local_cluster.master, self.local_cluster.cbas_nodes[0])
-        self.exclude_nodes.append(self.local_cluster.cbas_nodes[0])
+            if do_rebalance:
+                operation = self.task.async_rebalance(cluster.nodes_in_cluster, [], [])
+                self.task.jython_task_manager.get_task_result(operation)
+                if not operation.result:
+                    self.log.error("Failed while adding nodes to cluster during setup")
+                    self.tearDown()
+            
+            try:
+                self.collectionSetUp(cluster, cluster.bucket_util, False)
+            except Java_base_exception as exception:
+                    self.handle_collection_setup_exception(exception)
+            except Exception as exception:
+                self.handle_collection_setup_exception(exception)
+            
+            cluster.bucket_util._expiry_pager(val=5)
+        
+        CBASRebalanceUtil.exclude_nodes.append(self.local_cluster.cbas_nodes[0])
+        self.local_cluster.cbas_util = CbasUtil(self.local_cluster.master, self.local_cluster.cbas_nodes[0], self.task)
+        self.local_cluster.rebalance_util = CBASRebalanceUtil(
+            self.local_cluster, self.local_cluster.cluster_util, self.local_cluster.bucket_util, 
+            self.task, self.local_cluster.rest, vbucket_check=self.vbucket_check, 
+            cbas_util=self.local_cluster.cbas_util)
+        
         cbas_spec = self.local_cluster.cbas_util.get_cbas_spec(self.cbas_spec)
+        update_spec = {
+            "no_of_dataverses":self.input.param('no_of_dataverses', 1),
+            "no_of_datasets_per_dataverse":self.input.param('no_of_datasets_per_dataverse', 1),
+            "no_of_synonyms":self.input.param('no_of_synonyms', 1),
+            "no_of_indexes":self.input.param('no_of_indexes', 1),
+            "no_of_links":self.input.param('no_of_links', 1)}
+        self.local_cluster.cbas_util.update_cbas_spec(cbas_spec, update_spec)
         
         if self.remote_cluster:
+            self.remote_cluster.rebalance_util = CBASRebalanceUtil(
+                self.remote_cluster, self.remote_cluster.cluster_util, 
+                self.remote_cluster.bucket_util, self.task, self.remote_cluster.rest, 
+                vbucket_check=self.vbucket_check, cbas_util=None)
             link_properties = list()
-            for server in self.remote_cluster.servers:
+            for server in self.remote_cluster.nodes_in_cluster:
                 for encryption in ['none', 'half']:
                     link_properties.append(
                         {"type" : "couchbase", "hostname" : server.ip, 
@@ -170,23 +220,30 @@ class volume(BaseTestCase):
                          "encryption":encryption})
             cbas_spec["link"]["properties"] = link_properties
             if not self.local_cluster.cbas_util.create_cbas_infra_from_spec(
-                cbas_spec, self.local_cluster.bucket_util, self.remote_cluster.bucket_util):
+                cbas_spec, self.local_cluster.bucket_util, self.remote_cluster.bucket_util,
+                wait_for_ingestion=False):
                 self.fail("Error while creating infra from CBAS spec")
         else:
             if not self.local_cluster.cbas_util.create_cbas_infra_from_spec(
-                cbas_spec, self.local_cluster.bucket_util):
+                cbas_spec, self.local_cluster.bucket_util,wait_for_ingestion=False):
                 self.fail("Error while creating infra from CBAS spec")
+        
+        # start parallel query execution on KV and CBAS
+        for cluster in self.get_clusters():
+            if cluster.rebalance_util.cbas_util:
+                cluster.rebalance_util.run_parallel_cbas_query = self.input.param(
+                    "run_parallel_cbas_query", False)
+            cluster.rebalance_util.run_parallel_kv_query = self.input.param(
+                    "run_parallel_kv_query", False)
+            cluster.rebalance_util.start_parallel_queries()
 
     def tearDown(self):
         # Do not call the base class's teardown, as we want to keep the cluster intact after the volume run
-        # Do not call the base class's teardown, as we want to keep the cluster intact after the volume run
         for cluster in self.get_clusters():
-            if cluster.query_thread:
-                cluster.query_thread_flag = False
-                cluster.query_thread.join()
-                cluster.query_thread = None
+            cluster.rebalance_util.stop_parallel_queries()
             self.log.info("Printing bucket stats before teardown")
             cluster.bucket_util.print_bucket_stats()
+        
         if self.collect_pcaps:
             self.start_fetch_pcaps()
         result = self.check_coredump_exist(self.servers, force_collect=True)
@@ -203,16 +260,18 @@ class volume(BaseTestCase):
             cluster.rest.set_service_memoryQuota(service="cbasMemoryQuota", memoryQuota=memory)
         else:
             info = cluster.rest.get_nodes_self()
-            index_quota = 5000
-            kv_quota = info.mcdMemoryAllocated - index_quota
-            while kv_quota < info.memoryQuota:
-                index_quota /= 2
-                kv_quota = info.mcdMemoryAllocated - index_quota
+            kv_quota = info.mcdMemoryAllocated
             cluster.rest.set_service_memoryQuota(service="memoryQuota", memoryQuota=kv_quota)
-            cluster.rest.set_service_memoryQuota(service="indexMemoryQuota", memoryQuota=index_quota)
     
     # This code will be removed once cbas_base is refactored
-    def collectionSetUp(self, cluster, bucket_util, cluster_util):
+    def handle_collection_setup_exception(self, exception_obj):
+        if self.sdk_client_pool is not None:
+            self.sdk_client_pool.shutdown()
+        traceback.print_exc()
+        raise exception_obj
+    
+    # This code will be removed once cbas_base is refactored
+    def collectionSetUp(self, cluster, bucket_util, load_data=True):
         """
         Setup the buckets, scopes and collecitons based on the spec passed.
         """
@@ -229,7 +288,7 @@ class volume(BaseTestCase):
             bucket_util.get_crud_template_from_package(self.data_load_spec)
 
         # Process params to over_ride values if required
-        self.over_ride_bucket_template_params(buckets_spec)
+        self.over_ride_bucket_template_params(buckets_spec,cluster)
         self.over_ride_doc_loading_template_params(doc_loading_spec)
 
         # MB-38438, adding CollectionNotFoundException in retry exception
@@ -262,43 +321,14 @@ class volume(BaseTestCase):
         # TODO: remove this once the bug is fixed
         # self.sleep(120, "MB-38497")
         self.sleep(10, "MB-38497")
-
-        doc_loading_task = \
-            bucket_util.run_scenario_from_spec(
-                self.task,
-                cluster,
-                bucket_util.buckets,
-                doc_loading_spec,
-                mutation_num=0,
-                batch_size=self.batch_size)
-        if doc_loading_task.result is False:
-            self.fail("Initial doc_loading failed")
-
-        cluster_util.print_cluster_stats()
-
-        ttl_buckets = [
-            "multi_bucket.buckets_for_rebalance_tests_with_ttl",
-            "multi_bucket.buckets_all_membase_for_rebalance_tests_with_ttl",
-            "multi_bucket.buckets_for_volume_tests_with_ttl"]
-
-        # Verify initial doc load count
-        bucket_util._wait_for_stats_all_buckets()
-        if self.bucket_spec not in ttl_buckets:
-            bucket_util.validate_docs_per_collections_all_buckets()
-
-        # Prints bucket stats after doc_ops
-        bucket_util.print_bucket_stats()
+        if load_data:
+            self.reload_data_into_buckets(cluster)
     
     # This code will be removed once cbas_base is refactored
-    def over_ride_bucket_template_params(self, bucket_spec):
+    def over_ride_bucket_template_params(self, bucket_spec, cluster):
         for over_ride_param in self.over_ride_spec_params:
             if over_ride_param == "replicas":
                 bucket_spec[Bucket.replicaNumber] = self.num_replicas
-            elif over_ride_param == "bucket_size":
-                bucket_spec[Bucket.ramQuotaMB] = self.bucket_size
-            elif over_ride_param == "num_items":
-                bucket_spec[MetaConstants.NUM_ITEMS_PER_COLLECTION] = \
-                    self.num_items
             elif over_ride_param == "remove_default_collection":
                 bucket_spec[MetaConstants.REMOVE_DEFAULT_COLLECTION] = \
                     self.remove_default_collection
@@ -307,9 +337,24 @@ class volume(BaseTestCase):
                     bucket_spec[Bucket.flushEnabled] = Bucket.FlushBucket.ENABLED
                 else:
                     bucket_spec[Bucket.flushEnabled] = Bucket.FlushBucket.DISABLED
+            elif over_ride_param == "num_buckets":
+                bucket_spec[MetaConstants.NUM_BUCKETS] = int(
+                    self.input.param("num_buckets", 1))
+            elif over_ride_param == "bucket_size":
+                if self.bucket_size < 100:
+                    cluster_info = cluster.rest.get_nodes_self()
+                    kv_quota = cluster_info.__getattribute__("memoryQuota")
+                    self.bucket_size = kv_quota // bucket_spec[MetaConstants.NUM_BUCKETS]
+                bucket_spec[Bucket.ramQuotaMB] = self.bucket_size
+            elif over_ride_param == "num_scopes":
+                bucket_spec[MetaConstants.NUM_SCOPES_PER_BUCKET] = int(
+                    self.input.param("num_scopes", 1))
             elif over_ride_param == "num_collections":
                 bucket_spec[MetaConstants.NUM_COLLECTIONS_PER_SCOPE] = int(
                     self.input.param("num_collections", 1))
+            elif over_ride_param == "num_items":
+                bucket_spec[MetaConstants.NUM_ITEMS_PER_COLLECTION] = \
+                    self.num_items
     
     # This code will be removed once cbas_base is refactored
     def over_ride_doc_loading_template_params(self, target_spec):
@@ -322,149 +367,79 @@ class volume(BaseTestCase):
             elif over_ride_param == "doc_size":
                 target_spec[MetaCrudParams.DocCrud.DOC_SIZE] = self.doc_size
 
-    def run_cbq_query(self, cluster, query):
-        """
-        To run cbq queries
-        Note: Do not run this in parallel
-        """
-        result = cluster.n1ql_rest_connections[cluster.n1ql_turn_counter].query_tool(query, timeout=1300)
-        cluster.n1ql_turn_counter = (cluster.n1ql_turn_counter + 1) % len(cluster.n1ql_nodes)
-        return result
-
-    def wait_for_indexes_to_go_online(self, cluster, gsi_index_names, timeout=300):
-        """
-        Wait for indexes to go online after building the deferred indexes
-        """
-        self.log.info("Waiting for indexes to go online")
-        start_time = time.time()
-        stop_time = start_time + timeout
-        for gsi_index_name in gsi_index_names:
-            while True:
-                check_state_query = "SELECT state FROM system:indexes WHERE name='%s'" % gsi_index_name
-                result = self.run_cbq_query(cluster, check_state_query)
-                if result['results'][0]['state'] == "online":
-                    break
-                if time.time() > stop_time:
-                    self.fail("Index availability timeout of index: {0}".format(gsi_index_name))
-
-    def build_deferred_indexes(self, cluster, indexes_to_build):
-        """
-        Build secondary indexes that were deferred
-        """
-        self.log.info("Building indexes")
-        for bucket, bucket_data in indexes_to_build.items():
-            for scope, collection_data in bucket_data.items():
-                for collection, gsi_index_names in collection_data.items():
-                    build_query = "BUILD INDEX on `%s`.`%s`.`%s`(`%s`) " \
-                                  "USING GSI" \
-                                  % (bucket, scope, collection, ",".join(gsi_index_names))
-                    result = self.run_cbq_query(cluster, build_query)
-                    self.assertTrue(result['status'] == "success", "Build query %s failed." % build_query)
-                    self.wait_for_indexes_to_go_online(cluster, gsi_index_names)
-
-        query = "select state from system:indexes where state='deferred'"
-        result = self.run_cbq_query(cluster, query)
-        self.log.info("deferred indexes remaining: {0}".format(len(result['results'])))
-        query = "select state from system:indexes where state='online'"
-        result = self.run_cbq_query(cluster, query)
-        self.log.info("online indexes count: {0}".format(len(result['results'])))
-        self.sleep(600, "Wait after building indexes")
-
-    def create_indexes_and_initialize_queries(self, cluster):
-        """
-        Create gsi indexes on collections - according to number_of_indexes, and
-        Initialize select queries on collections that will be run later
-        """
-        self.log.info("Creating indexes with defer build")
-        cluster.select_queries = list()
-        indexes_to_build = dict()
-        count = 0
-        # ToDO create indexes on ephemeral buckets too using MOI storage
-        couchbase_buckets = [bucket for bucket in cluster.bucket_util.buckets if bucket.bucketType == "couchbase"]
-        for bucket in couchbase_buckets:
-            indexes_to_build[bucket.name] = dict()
-            for _, scope in bucket.scopes.items():
-                indexes_to_build[bucket.name][scope.name] = dict()
-                for _, collection in scope.collections.items():
-                    gsi_index_name = "gsi-" + str(count)
-                    create_index_query = "CREATE INDEX `%s` " \
-                                         "ON `%s`.`%s`.`%s`(`age`)" \
-                                         "WITH { 'defer_build': true, 'num_replica': 2 }" \
-                                         % (gsi_index_name, bucket.name, scope.name, collection.name)
-                    result = self.run_cbq_query(cluster, create_index_query)
-                    # self.assertTrue(result['status'] == "success", "Defer build Query %s failed." % create_index_query)
-
-                    if collection.name not in indexes_to_build[bucket.name][scope.name]:
-                        indexes_to_build[bucket.name][scope.name][collection.name] = list()
-                    indexes_to_build[bucket.name][scope.name][collection.name].append(gsi_index_name)
-
-                    select_query = "select age from `%s`.`%s`.`%s` where age > 1 limit 1" % (
-                        bucket.name, scope.name, collection.name)
-                    cluster.select_queries.append(select_query)
-
-                    count = count + 1
-                    if count >= self.number_of_indexes:
-                        return indexes_to_build
-        return indexes_to_build
-
-    def run_select_query(self, cluster):
-        """
-        Runs select queries in a loop in a separate thread until the thread is asked for to join
-        """
-        self.log.info("Starting select queries: {0}".format(cluster.query_thread_flag))
-        while cluster.query_thread_flag:
-            for select_query in cluster.select_queries:
-                result = self.run_cbq_query(cluster, select_query)
-                if result['status'] != "success":
-                    self.log.warn("Query failed: {0}".format(select_query))
-                time.sleep(3)
-        self.log.info("Stopping select queries")
-
     # Stopping and restarting the memcached process
     def stop_process(self):
-        target_node = self.servers[2]
-        remote = RemoteMachineShellConnection(target_node)
-        error_sim = CouchbaseError(self.log, remote)
-        error_to_simulate = "stop_memcached"
-        # Induce the error condition
-        error_sim.create(error_to_simulate)
-        self.sleep(20, "Wait before reverting the error condition")
-        # Revert the simulated error condition and close the ssh session
-        error_sim.revert(error_to_simulate)
-        remote.disconnect()
-
-    def rebalance(self, nodes_in=0, nodes_out=0):
-        servs_in = random.sample(self.available_servers, nodes_in)
-
-        self.nodes_cluster = self.cluster.nodes_in_cluster[:]
+        for cluster in self.get_clusters():
+            cluster_kv_nodes = cluster.cluster_util.get_nodes_from_services_map(
+                service_type="kv", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
+            try:
+                cluster_kv_nodes.remove(cluster.master)
+            except:
+                pass
+            remote = RemoteMachineShellConnection(random.choice(cluster_kv_nodes))
+            error_sim = CouchbaseError(self.log, remote)
+            error_to_simulate = "stop_memcached"
+            # Induce the error condition
+            error_sim.create(error_to_simulate)
+            self.sleep(20, "Wait before reverting the error condition")
+            # Revert the simulated error condition and close the ssh session
+            error_sim.revert(error_to_simulate)
+            remote.disconnect()
+    
+    #used
+    def rebalance(self, cluster, kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0):
+        
+        if kv_nodes_out > 0:
+            cluster_kv_nodes = cluster.cluster_util.get_nodes_from_services_map(
+                service_type="kv", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
+        else:
+            cluster_kv_nodes = []
+        
+        if cbas_nodes_out > 0:
+            cluster_cbas_nodes = cluster.cluster_util.get_nodes_from_services_map(
+                service_type="cbas", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
+        else:
+            cluster_cbas_nodes = []
+        
         for node in self.exclude_nodes:
-            self.nodes_cluster.remove(node)
-        servs_out = random.sample(self.nodes_cluster, nodes_out)
+            try:
+                cluster_kv_nodes.remove(node)
+            except:
+                pass
+            try:
+                cluster_cbas_nodes.remove(node)
+            except:
+                pass
+            
+        servs_in = random.sample(self.available_servers, kv_nodes_in+cbas_nodes_in)
+        servs_out = random.sample(cluster_kv_nodes, kv_nodes_out) + random.sample(cluster_cbas_nodes, cbas_nodes_out)
+            
 
-        if nodes_in == nodes_out:
+        if kv_nodes_in == kv_nodes_out:
             self.vbucket_check = False
 
-        services = None
-        if self.services_for_rebalance_in and nodes_in > 0:
-            services = list()
-            services.append(self.services_for_rebalance_in.replace(":", ","))
-            services = services * nodes_in
-            services = services * nodes_in
+        services = list()
+        if kv_nodes_in > 0:
+            services += ["kv"] * kv_nodes_in
+        if cbas_nodes_in > 0:
+            services += ["cbas"] * cbas_nodes_in
 
         rebalance_task = self.task.async_rebalance(
-            self.cluster.servers[:self.nodes_init], servs_in, servs_out, check_vbucket_shuffling=self.vbucket_check,
+            cluster.servers, servs_in, servs_out, check_vbucket_shuffling=self.vbucket_check,
             retry_get_process_num=200, services=services)
 
         self.available_servers = [servs for servs in self.available_servers if servs not in servs_in]
         self.available_servers += servs_out
 
-        self.cluster.nodes_in_cluster.extend(servs_in)
-        self.cluster.nodes_in_cluster = list(set(self.cluster.nodes_in_cluster) - set(servs_out))
+        cluster.servers.extend(servs_in)
+        cluster.servers = list(set(cluster.servers) - set(servs_out))
         return rebalance_task
-
-    def wait_for_rebalance_to_complete(self, task, wait_step=120):
-        self.task.jython_task_manager.get_task_result(task)
-        self.assertTrue(task.result, "Rebalance Failed")
+    
+    #used
+    def wait_for_rebalance_to_complete(self, tasks):
+        for task in tasks:
+            self.task.jython_task_manager.get_task_result(task)
+            self.assertTrue(task.result, "Rebalance Failed")
 
     def set_retry_exceptions(self, doc_loading_spec):
         """
@@ -479,34 +454,40 @@ class volume(BaseTestCase):
             retry_exceptions.append(SDKException.DurabilityAmbiguousException)
             retry_exceptions.append(SDKException.DurabilityImpossibleException)
         doc_loading_spec[MetaCrudParams.RETRY_EXCEPTIONS] = retry_exceptions
-
+    
+    #used
     def data_load_collection(self, async_load=True, skip_read_success_results=True):
-        doc_loading_spec = \
-            self.bucket_util.get_crud_template_from_package(self.data_load_spec)
-        self.set_retry_exceptions(doc_loading_spec)
-        doc_loading_spec[MetaCrudParams.DURABILITY_LEVEL] = self.durability_level
-        doc_loading_spec[MetaCrudParams.SKIP_READ_SUCCESS_RESULTS] = skip_read_success_results
-        task = self.bucket_util.run_scenario_from_spec(self.task,
-                                                       self.cluster,
-                                                       self.bucket_util.buckets,
-                                                       doc_loading_spec,
-                                                       mutation_num=0,
-                                                       async_load=async_load)
-        return task
-
-    def reload_data_into_buckets(self):
+        tasks = dict()
+        for cluster in self.get_clusters():
+            doc_loading_spec = \
+                cluster.bucket_util.get_crud_template_from_package(self.data_load_spec)
+            self.set_retry_exceptions(doc_loading_spec)
+            doc_loading_spec[MetaCrudParams.DURABILITY_LEVEL] = self.durability_level
+            doc_loading_spec[MetaCrudParams.SKIP_READ_SUCCESS_RESULTS] = skip_read_success_results
+            tasks[cluster] = cluster.bucket_util.run_scenario_from_spec(
+                self.task, cluster, cluster.bucket_util.buckets, doc_loading_spec, 
+                mutation_num=0, async_load=async_load)
+        if not async_load:
+            result = True
+            for task in tasks.values():
+                result = result and task.result
+            return result
+        return tasks
+    
+    #used
+    def reload_data_into_buckets(self,cluster):
         """
         Initial data load happens in collections_base. But this method loads
         data again when buckets have been flushed during volume test
         """
         doc_loading_spec = \
-            self.bucket_util.get_crud_template_from_package(
-                self.data_spec_name)
+            cluster.bucket_util.get_crud_template_from_package(
+                self.data_load_spec)
         doc_loading_task = \
-            self.bucket_util.run_scenario_from_spec(
+            cluster.bucket_util.run_scenario_from_spec(
                 self.task,
-                self.cluster,
-                self.bucket_util.buckets,
+                cluster,
+                cluster.bucket_util.buckets,
                 doc_loading_spec,
                 mutation_num=0,
                 batch_size=self.batch_size)
@@ -518,55 +499,59 @@ class volume(BaseTestCase):
             "volume_templates.buckets_for_volume_tests_with_ttl"]
 
         # Verify initial doc load count
-        self.bucket_util._wait_for_stats_all_buckets()
-        if self.spec_name not in ttl_buckets:
-            self.bucket_util.validate_docs_per_collections_all_buckets()
+        cluster.bucket_util._wait_for_stats_all_buckets()
+        if self.bucket_spec not in ttl_buckets:
+            cluster.bucket_util.validate_docs_per_collections_all_buckets()
 
         # Prints bucket stats after doc_ops
-        self.bucket_util.print_bucket_stats()
-
-    def wait_for_async_data_load_to_complete(self, task):
-        self.task.jython_task_manager.get_task_result(task)
-        if not self.skip_validations:
-            self.bucket_util.validate_doc_loading_results(task)
-            if task.result is False:
-                self.fail("Doc_loading failed")
-
-    def data_validation_collection(self):
-        retry_count = 0
-        while retry_count < 10:
-            try:
-                self.bucket_util._wait_for_stats_all_buckets()
-            except:
-                retry_count = retry_count + 1
-                self.log.info("ep-queue hasn't drained yet. Retry count: {0}".format(retry_count))
-            else:
-                break
-        if retry_count == 10:
-            self.log.info("Attempting last retry for ep-queue to drain")
-            self.bucket_util._wait_for_stats_all_buckets()
-        if self.doc_and_collection_ttl:
-            self.bucket_util._expiry_pager(val=5)
-            self.sleep(400, "wait for doc/collection maxttl to finish")
-            items = 0
-            self.bucket_util._wait_for_stats_all_buckets()
-            for bucket in self.bucket_util.buckets:
-                items = items + self.bucket_helper_obj.get_active_key_count(bucket)
-            if items != 0:
-                self.fail("doc count!=0, TTL + rebalance failed")
-        else:
+        cluster.bucket_util.print_bucket_stats()
+    
+    #used
+    def wait_for_async_data_load_to_complete(self, tasks):
+        for cluster,task in tasks.iteritems():
+            self.task.jython_task_manager.get_task_result(task)
             if not self.skip_validations:
-                self.bucket_util.validate_docs_per_collections_all_buckets()
+                cluster.bucket_util.validate_doc_loading_results(task)
+                if task.result is False:
+                    self.fail("Doc_loading failed")
+    
+    #used
+    def data_validation_collection(self):
+        for cluster in self.get_clusters(): 
+            retry_count = 0
+            while retry_count < 10:
+                try:
+                    cluster.bucket_util._wait_for_stats_all_buckets()
+                except:
+                    retry_count = retry_count + 1
+                    self.log.info("ep-queue hasn't drained yet. Retry count: {0}".format(retry_count))
+                else:
+                    break
+            if retry_count == 10:
+                self.log.info("Attempting last retry for ep-queue to drain")
+                cluster.bucket_util._wait_for_stats_all_buckets()
+            if self.doc_and_collection_ttl:
+                cluster.bucket_util._expiry_pager(val=5)
+                self.sleep(400, "wait for doc/collection maxttl to finish")
+                items = 0
+                cluster.bucket_util._wait_for_stats_all_buckets()
+                for bucket in cluster.bucket_util.buckets:
+                    items = items + cluster.bucket_helper_obj.get_active_key_count(bucket)
+                if items != 0:
+                    self.fail("doc count!=0, TTL + rebalance failed")
             else:
-                pass
+                if not self.skip_validations:
+                    cluster.bucket_util.validate_docs_per_collections_all_buckets()
+                else:
+                    pass
 
-    def wait_for_failover_or_assert(self, expected_failover_count, timeout=7200):
+    def wait_for_failover_or_assert(self, cluster_rest, expected_failover_count, timeout=7200):
         # Timeout is kept large for graceful failover
         time_start = time.time()
         time_max_end = time_start + timeout
         actual_failover_count = 0
         while time.time() < time_max_end:
-            actual_failover_count = self.get_failover_count()
+            actual_failover_count = self.get_failover_count(cluster_rest)
             if actual_failover_count == expected_failover_count:
                 break
             time.sleep(20)
@@ -580,264 +565,481 @@ class volume(BaseTestCase):
         self.log.info("{0} nodes failed over as expected in {1} seconds"
                       .format(actual_failover_count, time_end - time_start))
 
-    def get_failover_count(self):
-        rest = RestConnection(self.cluster.master)
-        cluster_status = rest.cluster_status()
+    def get_failover_count(self, cluster_rest):
+        cluster_status = cluster_rest.cluster_status()
         failover_count = 0
         # check for inactiveFailed
         for node in cluster_status['nodes']:
             if node['clusterMembership'] == "inactiveFailed":
                 failover_count += 1
         return failover_count
+    
+    #used
+    def validate_docs_in_datasets(self):
+        result = self.local_cluster.cbas_util.validate_docs_in_all_datasets()
+        self.assertTrue(result, "Error while validating doc count in datasets")        
 
     def test_volume_taf(self):
         self.loop = 0
-        # self.cluster_utils.set_metadata_purge_interval()
-        if self.number_of_indexes > 0:
-            self.query_thread = threading.Thread(target=self.run_select_query)
-            self.query_thread_flag = True
-            self.query_thread.start()
-        self.log.info("Finished steps 1-4 successfully in setup")
+        self.log.info("Finished steps 1-7 successfully in setup")
+        
         while self.loop < self.iterations:
-            if self.loop > 0 or self.flush_buckets_before_indexes_creation:
-                self.log.info("Reloading items to buckets")
-                self.reload_data_into_buckets()
+            
+            def all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0):
+                tasks = list()
+                tasks.append(self.rebalance(
+                    cluster=self.local_cluster, kv_nodes_in=kv_nodes_in, kv_nodes_out=kv_nodes_out, 
+                    cbas_nodes_in=cbas_nodes_in, cbas_nodes_out=cbas_nodes_out))
+                if self.remote_cluster:
+                    tasks.append(self.rebalance(
+                        cluster=self.remote_cluster, kv_nodes_in=kv_nodes_in, kv_nodes_out=kv_nodes_out, 
+                        cbas_nodes_in=0, cbas_nodes_out=0))
+                return tasks
+            
+            def print_all_cluster_bucket_stats():
+                for cluster in self.get_clusters():
+                    cluster.bucket_util.print_bucket_stats()
+            
+            def change_bucket_replica(replicaNumber):
+                for cluster in self.get_clusters(): 
+                    for i in range(len(cluster.bucket_util.buckets)):
+                        cluster.bucket_helper_obj.change_bucket_props(
+                            cluster.bucket_util.buckets[i], replicaNumber=replicaNumber)
             #########################################################################################################################
-            self.log.info("Step 5: Rebalance in with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
-            rebalance_task = self.rebalance(nodes_in=1, nodes_out=0)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
-            self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
-            self.data_validation_collection()
-            self.bucket_util.print_bucket_stats()
-            #########################################################################################################################
-            self.log.info("Step 6: Rebalance Out with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
-            rebalance_task = self.rebalance(nodes_in=0, nodes_out=1)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
-            self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
-            self.data_validation_collection()
-            self.bucket_util.print_bucket_stats()
-            #######################################################################################################################
-            self.log.info("Step 7: Rebalance In_Out with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
-            rebalance_task = self.rebalance(nodes_in=2, nodes_out=1)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
-            self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
-            self.data_validation_collection()
-            self.bucket_util.print_bucket_stats()
-            ########################################################################################################################
-            self.log.info("Step 8: Swap with Loading of docs")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
-            rebalance_task = self.rebalance(nodes_in=1, nodes_out=1)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
-            self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
-            self.data_validation_collection()
-            self.tasks = []
-            self.bucket_util.print_bucket_stats()
-            ########################################################################################################################
-            self.log.info("Step 9: Updating the bucket replica to 2")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
-            bucket_helper = BucketHelper(self.cluster.master)
-            for i in range(len(self.bucket_util.buckets)):
-                bucket_helper.change_bucket_props(
-                    self.bucket_util.buckets[i], replicaNumber=2)
-            rebalance_task = self.rebalance(nodes_in=1, nodes_out=0)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
-            self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
-            self.data_validation_collection()
-            self.bucket_util.print_bucket_stats()
-            ########################################################################################################################
-            if self.contains_ephemeral:
-                self.log.info("No Memcached kill for ephemeral bucket")
+            if self.test_type == "steady_state":
+                for cluster in self.get_clusters():
+                    self.reload_data_into_buckets(cluster)
+                    cluster.cluster_util.print_cluster_stats()
+                if self.remote_cluster:
+                    self.assertTrue(
+                        self.local_cluster.cbas_util.validate_docs_in_all_datasets(
+                            self.local_cluster.bucket_util, self.remote_cluster.bucket_util),
+                        "Error while validating doc count in datasets")
+                else:
+                    self.assertTrue(
+                        self.local_cluster.cbas_util.validate_docs_in_all_datasets(
+                            self.local_cluster.bucket_util, None),
+                        "Error while validating doc count in datasets")
             else:
-                self.log.info("Step 10: Stopping and restarting memcached process")
+                #########################################################################################################################
+                self.log.info("Step 8: Rebalance in data node on both Local and Remote cluster with Loading of docs")
                 if self.data_load_stage == "before":
-                    task = self.data_load_collection(async_load=False)
-                    if task.result is False:
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
                         self.fail("Doc loading failed")
-                rebalance_task = self.task.async_rebalance(self.cluster.servers, [], [], retry_get_process_num=200)
+                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
                 if self.data_load_stage == "during":
                     task = self.data_load_collection()
                 self.wait_for_rebalance_to_complete(rebalance_task)
-                self.stop_process()
                 if self.data_load_stage == "during":
                     self.wait_for_async_data_load_to_complete(task)
                 self.data_validation_collection()
-                self.bucket_util.print_bucket_stats()
-            ########################################################################################################################
-            step_count = 10
-            for failover in ["Graceful", "Hard"]:
-                for action in ["RebalanceOut", "FullRecovery", "DeltaRecovery"]:
-                    step_count = step_count + 1
-                    self.log.info(
-                        "Step {0}: {1} Failover a node and {2} that node with data load in parallel".format(step_count,
-                                                                                                            failover,
-                                                                                                            action))
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 9: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 10: Rebalance in CBAS node on Local cluster with Loading of docs on KV")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=1, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 11: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 12: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 13: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 14: Rebalance In CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=0, cbas_nodes_in=1, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 15: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 16: Rebalance Out data node on both Local and Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 17: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 18: Rebalance Out CBAS node on Local cluster with Loading of docs on KV")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 19: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 20: Rebalance In-Out data node on both Local and Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=2, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 21: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 22: Rebalance In-Out CBAS node on Local cluster with Loading of docs on KV")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=2, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 23: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Rebalance out extra node that was rebalanced-in in last step")
+                self.log.info("Step 24: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 25: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 26: Rebalance In-Out cbas node and data node on both Local cluster and only data node on Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=2, kv_nodes_out=1, cbas_nodes_in=2, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 27: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #######################################################################################################################
+                self.log.info("Rebalance out extra node that was rebalanced-in in last step")
+                self.log.info("Step 28: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 29: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                #########################################################################################################################
+                self.log.info("Step 30: Swap Rebalance KV node on Local and Remote cluster with Loading of docs on KV")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 31: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                ########################################################################################################################
+                self.log.info("Step 32: Swap Rebalance CBAS node on Local cluster with Loading of docs on KV")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=1, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 33: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                ########################################################################################################################
+                self.log.info("Step 34: Swap Rebalance KV and CBAS node on Local Cluster and KV node on Remote cluster with Loading of docs on KV")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=1, cbas_nodes_in=1, cbas_nodes_out=1)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 35: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                ########################################################################################################################
+                self.log.info("Step 36: Updating the bucket replica to 2 on Local and Remote cluster")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                change_bucket_replica(replicaNumber=2)
+                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 37: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
+                ########################################################################################################################
+                if self.contains_ephemeral:
+                    self.log.info("No Memcached kill for ephemeral bucket")
+                else:
+                    self.log.info("Step 38: Stopping and restarting memcached process")
                     if self.data_load_stage == "before":
                         task = self.data_load_collection(async_load=False)
                         if task.result is False:
                             self.fail("Doc loading failed")
-
-                    self.std_vbucket_dist = self.input.param("std_vbucket_dist", None)
-                    std = self.std_vbucket_dist or 1.0
-
-                    kv_nodes = self.cluster_util.get_kv_nodes()
-                    self.log.info("Collecting pre_failover_stats. KV nodes are {0}".format(kv_nodes))
-                    prev_failover_stats = self.bucket_util.get_failovers_logs(kv_nodes,
-                                                                              self.bucket_util.buckets)
-                    prev_vbucket_stats = self.bucket_util.get_vbucket_seqnos(kv_nodes,
-                                                                             self.bucket_util.buckets)
-                    self.sleep(10)
-
-                    disk_replica_dataset, disk_active_dataset = self.bucket_util.get_and_compare_active_replica_data_set_all(
-                        kv_nodes, self.bucket_util.buckets, path=None)
-
-                    self.rest = RestConnection(self.cluster.master)
-                    self.nodes = self.cluster_util.get_nodes(self.cluster.master)
-                    self.chosen = self.cluster_util.pick_nodes(self.cluster.master, howmany=1,
-                                                               exclude_nodes=self.exclude_nodes)
-
+                    rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
                     if self.data_load_stage == "during":
-                        reset_flag = False
-                        if (not self.durability_level) and failover == "Hard":
-                            # Force a durability level to prevent data loss during hard failover
-                            self.log.info("Forcing durability level: MAJORITY")
-                            self.durability_level = "MAJORITY"
-                            reset_flag = True
                         task = self.data_load_collection()
-                        if reset_flag:
-                            self.durability_level = ""
-
-                    # Mark Node for failover
-                    if failover == "Graceful":
-                        self.success_failed_over = self.rest.fail_over(self.chosen[0].id, graceful=True)
-                    else:
-                        self.success_failed_over = self.rest.fail_over(self.chosen[0].id, graceful=False)
-
-                    self.sleep(300)
-                    self.wait_for_failover_or_assert(1)
-
-                    # Perform the action
-                    if action == "RebalanceOut":
-                        self.nodes = self.rest.node_statuses()
-                        self.rest.rebalance(otpNodes=[node.id for node in self.nodes], ejectedNodes=[self.chosen[0].id])
-                        # self.sleep(600)
-                        self.assertTrue(self.rest.monitorRebalance(stop_if_loop=False), msg="Rebalance failed")
-                        servs_out = [node for node in self.cluster.servers if node.ip == self.chosen[0].ip]
-                        self.cluster.nodes_in_cluster = list(set(self.cluster.nodes_in_cluster) - set(servs_out))
-                        self.available_servers += servs_out
-                        self.sleep(10)
-                    else:
-                        if action == "FullRecovery":
-                            if self.success_failed_over:
-                                self.rest.set_recovery_type(otpNode=self.chosen[0].id, recoveryType="full")
-                        elif action == "DeltaRecovery":
-                            if self.success_failed_over:
-                                self.rest.set_recovery_type(otpNode=self.chosen[0].id, recoveryType="delta")
-
-                        rebalance_task = self.task.async_rebalance(
-                            self.cluster.servers[:self.nodes_init], [], [], retry_get_process_num=200)
-                        self.wait_for_rebalance_to_complete(rebalance_task)
-                        self.sleep(10)
-
+                    self.wait_for_rebalance_to_complete(rebalance_task)
+                    self.stop_process()
                     if self.data_load_stage == "during":
                         self.wait_for_async_data_load_to_complete(task)
                     self.data_validation_collection()
-
-                    kv_nodes = self.cluster_util.get_kv_nodes()
-                    self.log.info("Collecting post_failover_stats. KV nodes are {0}".format(kv_nodes))
-                    self.bucket_util.compare_failovers_logs(prev_failover_stats, kv_nodes,
-                                                            self.bucket_util.buckets)
-                    self.sleep(10)
-
-                    self.bucket_util.data_analysis_active_replica_all(
-                        disk_active_dataset, disk_replica_dataset,
-                        kv_nodes,
-                        self.bucket_util.buckets, path=None)
-                    self.bucket_util.vb_distribution_analysis(
-                        servers=kv_nodes, buckets=self.bucket_util.buckets,
-                        num_replicas=2,
-                        std=std, total_vbuckets=self.cluster_util.vbuckets)
-                    self.sleep(10)
-                    self.tasks = []
-                    # Bring back the rebalance out node back to cluster for further steps
-                    if action == "RebalanceOut":
-                        self.sleep(120)
-                        rebalance_task = self.rebalance(nodes_in=1, nodes_out=0)
-                        # self.sleep(600)
-                        self.wait_for_rebalance_to_complete(rebalance_task)
-                    self.bucket_util.print_bucket_stats()
+                    print_all_cluster_bucket_stats()
+                    self.log.info("Step 39: Validating doc count in datasets.")
+                    self.validate_docs_in_datasets()
+                ########################################################################################################################
+                step_count = 39
+                for failover in ["Graceful", "Hard"]:
+                    for action in ["RebalanceOut", "FullRecovery", "DeltaRecovery"]:
+                        for service_type in ["kv", "cbas", "kv-cbas"]:
+                            if (service_type in ["cbas","kv-cbas"]) and (failover == "Graceful" or action == "DeltaRecovery"):
+                                continue
+                            else:
+                                step_count = step_count + 1
+                                self.log.info(
+                                    "Step {0}: {1} Failover a node and {2} that node with data load in parallel".format(step_count,
+                                                                                                                        failover,
+                                                                                                                        action))
+                                if self.data_load_stage == "before":
+                                    task = self.data_load_collection(async_load=False)
+                                    if task.result is False:
+                                        self.fail("Doc loading failed")
+                                
+                                if self.data_load_stage == "during":
+                                    reset_flag = False
+                                    if (not self.durability_level) and failover == "Hard" and "kv" in service_type:
+                                        # Force a durability level to prevent data loss during hard failover
+                                        self.log.info("Forcing durability level: MAJORITY")
+                                        self.durability_level = "MAJORITY"
+                                        reset_flag = True
+                                    task = self.data_load_collection()
+                                    if reset_flag:
+                                        self.durability_level = ""
+                                
+                                for cluster in self.get_clusters():
+                                    if "kv" in service_type:
+                                        cluster_kv_nodes = cluster.cluster_util.get_nodes_from_services_map(
+                                            service_type="kv", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
+                                    else:
+                                        cluster_kv_nodes = []
+                                    
+                                    if "cbas" in service_type:
+                                        cluster_cbas_nodes = cluster.cluster_util.get_nodes_from_services_map(
+                                            service_type="cbas", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
+                                    else:
+                                        cluster_cbas_nodes = []
+                                    
+                                    for node in self.exclude_nodes:
+                                        try:
+                                            cluster_kv_nodes.remove(node)
+                                        except:
+                                            pass
+                                        try:
+                                            cluster_cbas_nodes.remove(node)
+                                        except:
+                                            pass
+                                    
+                                    failover_count = 0
+                                    failover_nodes = []
+                                    cluster.success_kv_failed_over = False
+                                    cluster.success_cbas_failed_over = False
+                                    # Mark Node for failover
+                                    if failover == "Graceful":
+                                        cluster.success_kv_failed_over = cluster.rest.fail_over(cluster_kv_nodes[0], graceful=True)
+                                        failover_count += 1
+                                        failover_nodes.append(cluster_kv_nodes[0])
+                                    else:
+                                        if "kv" in service_type:
+                                            cluster.success_kv_failed_over = cluster.rest.fail_over(cluster_kv_nodes[0], graceful=True)
+                                            failover_count += 1
+                                            failover_nodes.append(cluster_kv_nodes[0])
+                                        if "cbas" in service_type and cluster_cbas_nodes:
+                                            cluster.success_cbas_failed_over = cluster.rest.fail_over(cluster_cbas_nodes[0], graceful=True)
+                                            failover_count += 1
+                                            failover_nodes.append(cluster_cbas_nodes[0])
+                                    self.sleep(300)
+                                    self.wait_for_failover_or_assert(cluster.rest, failover_count)
+    
+                                    # Perform the action
+                                    if action == "RebalanceOut":
+                                        nodes = cluster.rest.node_statuses()
+                                        cluster.rest.rebalance(
+                                            otpNodes=[node.id for node in nodes], ejectedNodes=[node.ip for node in failover_nodes])
+                                        # self.sleep(600)
+                                        self.assertTrue(cluster.rest.monitorRebalance(stop_if_loop=False), msg="Rebalance failed")
+                                        cluster.servers = list(set(cluster.servers) - set(failover_nodes))
+                                        self.available_servers += failover_nodes
+                                        self.sleep(10)
+                                    else:
+                                        if action == "FullRecovery":
+                                            if cluster.success_kv_failed_over:
+                                                cluster.rest.set_recovery_type(otpNode=cluster_kv_nodes[0].id, recoveryType="full")
+                                            if cluster.success_cbas_failed_over:
+                                                cluster.rest.set_recovery_type(otpNode=cluster_cbas_nodes[0].id, recoveryType="full")
+                                        elif action == "DeltaRecovery":
+                                            if cluster.success_kv_failed_over:
+                                                cluster.rest.set_recovery_type(otpNode=cluster_kv_nodes[0].id, recoveryType="delta")
+                
+                                        rebalance_task = self.task.async_rebalance(
+                                            cluster.servers, [], [], retry_get_process_num=200)
+                                        self.wait_for_rebalance_to_complete([rebalance_task])
+                                        self.sleep(10)
+    
+                                if self.data_load_stage == "during":
+                                    self.wait_for_async_data_load_to_complete(task)
+                                self.data_validation_collection()
+    
+                                # Bring back the rebalance out node back to cluster for further steps
+                                if action == "RebalanceOut":
+                                    self.sleep(120)
+                                    kv_nodes_in = 0
+                                    cbas_nodes_in = 0
+                                    if service_type in ["kv", "kv-cbas"]:
+                                        kv_nodes_in = 1
+                                    if service_type in ["cbas", "kv-cbas"]:
+                                        cbas_nodes_in = 1
+                                    rebalance_task = all_rebalance(
+                                        kv_nodes_in=kv_nodes_in, kv_nodes_out=0, cbas_nodes_in=cbas_nodes_in, cbas_nodes_out=0)
+                                    self.wait_for_rebalance_to_complete(rebalance_task)
+                                print_all_cluster_bucket_stats()
+                                step_count = step_count + 1
+                                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
+                                self.validate_docs_in_datasets()
+                ########################################################################################################################
+                self.log.info("Step 60: Updating the bucket replica to 1 on Local and Remote cluster")
+                if self.data_load_stage == "before":
+                    task_result = self.data_load_collection(async_load=False)
+                    if task_result is False:
+                        self.fail("Doc loading failed")
+                change_bucket_replica(replicaNumber=1)
+                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
+                if self.data_load_stage == "during":
+                    task = self.data_load_collection()
+                self.wait_for_rebalance_to_complete(rebalance_task)
+                if self.data_load_stage == "during":
+                    self.wait_for_async_data_load_to_complete(task)
+                self.data_validation_collection()
+                print_all_cluster_bucket_stats()
+                self.log.info("Step 61: Validating doc count in datasets.")
+                self.validate_docs_in_datasets()
             ########################################################################################################################
-            self.log.info("Step 17: Updating the bucket replica to 1")
-            if self.data_load_stage == "before":
-                task = self.data_load_collection(async_load=False)
-                if task.result is False:
-                    self.fail("Doc loading failed")
-            bucket_helper = BucketHelper(self.cluster.master)
-            for i in range(len(self.bucket_util.buckets)):
-                bucket_helper.change_bucket_props(
-                    self.bucket_util.buckets[i], replicaNumber=1)
-            rebalance_task = self.task.async_rebalance(self.cluster.servers, [], [], retry_get_process_num=200)
-            if self.data_load_stage == "during":
-                task = self.data_load_collection()
-            self.wait_for_rebalance_to_complete(rebalance_task)
-            if self.data_load_stage == "during":
-                self.wait_for_async_data_load_to_complete(task)
-            self.data_validation_collection()
-            self.tasks = []
-            self.bucket_util.print_bucket_stats()
-            ########################################################################################################################
-            self.log.info("Step 18: Flush bucket(s) and start the entire process again")
+            self.log.info("Step 62: Flush bucket(s) and start the entire process again")
             self.loop += 1
             if self.loop < self.iterations:
+                cluster_init_dict = {self.local_cluster:self.nodes_init}
+                if self.remote_cluster:
+                    cluster_init_dict[self.remote_cluster] = self.input.param("remote_init_nodes", 1)
                 # Flush buckets(s)
-                self.bucket_util.flush_all_buckets(self.cluster.master, skip_resetting_num_items=True)
-                self.sleep(10)
-                if len(self.cluster.nodes_in_cluster) > self.nodes_init:
-                    self.nodes_cluster = self.cluster.nodes_in_cluster[:]
-                    self.nodes_cluster.remove(self.cluster.master)
-                    servs_out = random.sample(self.nodes_cluster,
-                                              int(len(self.cluster.nodes_in_cluster) - self.nodes_init))
-                    rebalance_task = self.task.async_rebalance(
-                        self.cluster.servers[:self.nodes_init], [], servs_out, retry_get_process_num=200)
-                    self.wait_for_rebalance_to_complete(rebalance_task)
-                    self.available_servers += servs_out
-                    self.cluster.nodes_in_cluster = list(set(self.cluster.nodes_in_cluster) - set(servs_out))
+                for cluster, init_node in cluster_init_dict.iteritems(): 
+                    cluster.bucket_util.flush_all_buckets(cluster.master, skip_resetting_num_items=True)
+                    self.sleep(10)
+                    if len(cluster.nodes_in_cluster) > init_node:
+                        nodes_cluster = cluster.nodes_in_cluster
+                        nodes_cluster.remove(cluster.master)
+                        servs_out = random.sample(nodes_cluster,
+                                                  int(len(cluster.nodes_in_cluster) - init_node))
+                        rebalance_task = self.task.async_rebalance(
+                            cluster.nodes_in_cluster, [], servs_out, retry_get_process_num=200)
+                        cluster.rebalance_util.wait_for_rebalance_task_to_complete(rebalance_task)
+                        CBASRebalanceUtil.available_servers += servs_out
+                        cluster.nodes_in_cluster = list(set(cluster.nodes_in_cluster) - set(servs_out))
             else:
-                if self.number_of_indexes > 0:
-                    self.query_thread_flag = False
-                    self.query_thread.join()
-                    self.query_thread = None
                 self.log.info("Volume Test Run Complete")
         ############################################################################################################################

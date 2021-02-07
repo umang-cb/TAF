@@ -23,8 +23,8 @@ spec = {
     
     # Accepted values are between 0 to 100, if all 3 have same value or if the total percentage exceeds 100, then all 3 types
     # of datasets will be created in equal numbers
-    "percent_of_local_datasets":50,
-    "percent_of_remote_datasets":50,
+    "percent_of_local_datasets":100,
+    "percent_of_remote_datasets":0,
     "percent_of_external_datasets":0,
     
     # Accepted values are 0 or any positive int.
@@ -88,7 +88,7 @@ spec = {
         "exclude_collections" : [],
         # Accepted values are list of creation methods ["cbas_collection","cbas_dataset","enable_cbas_from_kv"].
         # [] means all methods will be considered while creating dataset.
-        "creation_methods" : [],
+        "creation_methods" : ["cbas_collection","cbas_dataset"],
         # This is only applicable while creating external datasets. 
         "external_dataset_properties" : [{}]
         },
