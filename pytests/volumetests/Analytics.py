@@ -456,25 +456,6 @@ class volume(BaseTestCase):
         doc_loading_spec[MetaCrudParams.RETRY_EXCEPTIONS] = retry_exceptions
     
     #used
-    def data_load_collection(self, async_load=True, skip_read_success_results=True):
-        tasks = dict()
-        for cluster in self.get_clusters():
-            doc_loading_spec = \
-                cluster.bucket_util.get_crud_template_from_package(self.data_load_spec)
-            self.set_retry_exceptions(doc_loading_spec)
-            doc_loading_spec[MetaCrudParams.DURABILITY_LEVEL] = self.durability_level
-            doc_loading_spec[MetaCrudParams.SKIP_READ_SUCCESS_RESULTS] = skip_read_success_results
-            tasks[cluster] = cluster.bucket_util.run_scenario_from_spec(
-                self.task, cluster, cluster.bucket_util.buckets, doc_loading_spec, 
-                mutation_num=0, async_load=async_load)
-        if not async_load:
-            result = True
-            for task in tasks.values():
-                result = result and task.result
-            return result
-        return tasks
-    
-    #used
     def reload_data_into_buckets(self,cluster):
         """
         Initial data load happens in collections_base. But this method loads
@@ -577,6 +558,24 @@ class volume(BaseTestCase):
     #used
     def validate_docs_in_datasets(self):
         pass
+    
+    def perform_ops_on_all_clusters(self, operation, params={}):
+        tasks = dict()
+        for cluster in self.get_clusters():
+            if operation == "reload_data_into_buckets":
+                self.reload_data_into_buckets(cluster)
+                cluster.cluster_util.print_cluster_stats()
+            elif operation == "data_load_collection":
+                params["doc_spec_name"] = self.data_load_spec
+                params["skip_validations"] = self.skip_validations
+                tasks[cluster] = cluster.rebalance_util.data_load_collection(**params)
+            elif operation == "rebalance":
+                if not hasattr(cluster, "cbas_util"):
+                    params["cbas_nodes_in"] = 0
+                    params["cbas_nodes_out"] = 0
+                if any(params.values()):
+                    tasks[cluster]= cluster.rebalance_util.rebalance(**params)
+        return tasks
 
     def test_volume_taf(self):
         self.loop = 0
@@ -606,9 +605,7 @@ class volume(BaseTestCase):
                             cluster.bucket_util.buckets[i], replicaNumber=replicaNumber)
             #########################################################################################################################
             if self.test_type == "steady_state":
-                for cluster in self.get_clusters():
-                    self.reload_data_into_buckets(cluster)
-                    cluster.cluster_util.print_cluster_stats()
+                self.perform_ops_on_all_clusters("reload_data_into_buckets")
                 if self.remote_cluster:
                     self.assertTrue(
                         self.local_cluster.cbas_util.validate_docs_in_all_datasets(
@@ -623,13 +620,15 @@ class volume(BaseTestCase):
                 #########################################################################################################################
                 self.log.info("Step 8: Rebalance in data node on both Local and Remote cluster with Loading of docs")
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":1, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
                     task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                self.wait_for_rebalance_to_complete(rebalance_tasks)
                 if self.data_load_stage == "during":
                     self.wait_for_async_data_load_to_complete(task)
                 self.data_validation_collection()

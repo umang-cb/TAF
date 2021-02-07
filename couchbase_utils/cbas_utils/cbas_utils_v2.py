@@ -3633,6 +3633,7 @@ class CreateDatasetsOnAllCollectionsTask(Task):
                     False, False, None, dataset.link_name, None, False, None, None, 
                     None, 120, 120, analytics_collection)
 
+
 class RunSleepQueryOnDatasetsTask(Task):
     def __init__(self, num_queries, cbas_util, datasets=[],
                  sleep_time=5000):
