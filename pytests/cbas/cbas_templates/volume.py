@@ -5,7 +5,7 @@ Created on 10-Dec-2020
 '''
 spec = {
     # Accepted values are > 0
-    "max_thread_count" : 25,
+    "max_thread_count" : 2,
     
     # Accepted values are 0 or any positive int. 0 and 1 means no dataverse will be created and Default dataverse will be used.
     "no_of_dataverses" : 6,
