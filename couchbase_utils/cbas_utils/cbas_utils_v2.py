@@ -1813,7 +1813,8 @@ class Dataset_Util(Link_Util):
                                             dataset_obj.name, dataset_obj.full_kv_entity_name, dataverse_name, 
                                             False, False, None, dataset_obj.link_name, None, False, None, None, 
                                             None, timeout=cbas_spec.get("api_timeout",120), 
-                                            analytics_timeout=cbas_spec.get("cbas_timeout",120), analytics_collection))
+                                            analytics_timeout=cbas_spec.get("cbas_timeout",120), 
+                                            analytics_collection= analytics_collection))
                             else:
                                 results.append(
                                     self.create_dataset_on_external_resource(
