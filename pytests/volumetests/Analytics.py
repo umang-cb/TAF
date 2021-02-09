@@ -101,6 +101,7 @@ class volume(BaseTestCase):
         self.vbucket_check = self.input.param("vbucket_check", True)
         
         self.bucket_spec = self.input.param("bucket_spec", "volume_templates.buckets_for_volume_test")
+        self.initial_data_load = self.input.param("initial_data_load", False)
         self.data_load_spec = self.input.param("data_load_spec", "volume_test_load_for_volume_test")
         self.cbas_spec = self.input.param("cbas_spec", "volume")
         self.bucket_size = self.input.param("bucket_size", 0)
@@ -185,7 +186,12 @@ class volume(BaseTestCase):
                     self.tearDown()
             
             try:
-                self.collectionSetUp(cluster, cluster.bucket_util, False)
+                if self.initial_data_load:
+                    self.data_load_spec = "initial_load"
+                self.collectionSetUp(cluster, cluster.bucket_util, self.initial_data_load)
+                if self.initial_data_load:
+                    self.data_load_spec = self.input.param(
+                        "data_load_spec", "volume_test_load_for_volume_test")
             except Java_base_exception as exception:
                     self.handle_collection_setup_exception(exception)
             except Exception as exception:
@@ -331,7 +337,7 @@ class volume(BaseTestCase):
         # self.sleep(120, "MB-38497")
         self.sleep(10, "MB-38497")
         if load_data:
-            self.reload_data_into_buckets(cluster, percentage_per_collection=25)
+            self.reload_data_into_buckets(cluster)
     
     # This code will be removed once cbas_base is refactored
     def over_ride_bucket_template_params(self, bucket_spec, cluster):
@@ -395,7 +401,7 @@ class volume(BaseTestCase):
             error_sim.revert(error_to_simulate)
             remote.disconnect()
 
-    def reload_data_into_buckets(self,cluster, percentage_per_collection=100):
+    def reload_data_into_buckets(self,cluster):
         """
         Initial data load happens in collections_base. But this method loads
         data again when buckets have been flushed during volume test
@@ -404,9 +410,6 @@ class volume(BaseTestCase):
         doc_loading_spec = \
             cluster.bucket_util.get_crud_template_from_package(
                 self.data_load_spec)
-        if percentage_per_collection > 0:
-            doc_loading_spec["doc_crud"][
-                MetaCrudParams.DocCrud.CREATE_PERCENTAGE_PER_COLLECTION] = percentage_per_collection
         doc_loading_task = \
             cluster.bucket_util.run_scenario_from_spec(
                 self.task,
@@ -455,8 +458,7 @@ class volume(BaseTestCase):
         tasks = dict()
         for cluster in self.get_clusters():
             if operation == "reload_data_into_buckets":
-                params["cluster"] = cluster
-                self.reload_data_into_buckets(**params)
+                self.reload_data_into_buckets(cluster)
                 cluster.cluster_util.print_cluster_stats()
             elif operation == "data_load_collection":
                 params["doc_spec_name"] = self.data_load_spec
@@ -492,8 +494,7 @@ class volume(BaseTestCase):
             
             if self.test_type == "steady_state":
                 self.log.info("Step {0]: Verifying docs in dataset for steady state test".format(step_count))
-                self.perform_ops_on_all_clusters("reload_data_into_buckets", 
-                                                 {"percentage_per_collection": 75})
+                self.perform_ops_on_all_clusters("reload_data_into_buckets")
                 self.validate_docs_in_datasets()
                 step_count += 1
             else:
