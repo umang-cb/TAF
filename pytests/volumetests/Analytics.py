@@ -440,7 +440,7 @@ class volume(BaseTestCase):
     
     def get_tasks_results(self, tasks, rebalance=False):
         results = list()
-        for cluster,task in tasks.iteritems:
+        for cluster,task in tasks.iteritems():
             if rebalance:
                 results.append(cluster.rebalance_util.wait_for_rebalance_task_to_complete(task))
             else:
