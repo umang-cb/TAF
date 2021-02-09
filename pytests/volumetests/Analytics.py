@@ -17,7 +17,6 @@ Remote cluster -
 1 node - KV, and Index
 '''
 
-import time
 from math import ceil
 import random
 
@@ -67,6 +66,8 @@ class volume(BaseTestCase):
     :testparams skip_validations: (boolean)
     :testparams run_parallel_cbas_query: (boolean) start running cbas queries on a seperate thread in parallel
     :testparams run_parallel_kv_query: (boolean) start running KV queries on a seperate thread in parallel
+    :testparams num_parallel_queries: (int) number of queries to run in parallel
+    :testparams query_interval: (int) interval between two subsequent queries.
     
     Test Scaling parameters
     :testparams override_spec_params: (str) ';' seperated bucket_spec and data_load_spec properties to be updated.
@@ -86,8 +87,8 @@ class volume(BaseTestCase):
     :testparams no_of_links: (int) no. of remote links
     :testparams no_of_synonyms: (int) no. of synonyms
     :testparams no_of_indexes: (int) no. of indexes on datasets
-    :testparams 
-    :testparams 
+    :testparams api_timeout: (int) http connection timeout.
+    :testparams cbas_timeout: (int) cbas query timeout.
     """
     
     def setUp(self):
@@ -119,6 +120,8 @@ class volume(BaseTestCase):
         self.remote_cluster = None
         CBASRebalanceUtil.available_servers = self.servers[:]
         CBASRebalanceUtil.exclude_nodes = list()
+        CBASRebalanceUtil.no_of_parallel_queries = self.input.param("num_parallel_queries", 1)
+        CBASRebalanceUtil.query_interval = self.input.param("query_interval", 3)
         
         # Adding nodes in clusters, creating indexes, loading data in collections and creating cbas infra
         for cluster in self.get_clusters():
@@ -203,7 +206,13 @@ class volume(BaseTestCase):
             "no_of_datasets_per_dataverse":self.input.param('no_of_datasets_per_dataverse', 1),
             "no_of_synonyms":self.input.param('no_of_synonyms', 1),
             "no_of_indexes":self.input.param('no_of_indexes', 1),
-            "no_of_links":self.input.param('no_of_links', 1)}
+            "no_of_links":self.input.param('no_of_links', 1),
+            "max_thread_count":self.input.param("num_parallel_queries", 1),
+            "api_timeout":self.input.param("api_timeout", 300),
+            "cbas_timeout":self.input.param("cbas_timeout", 300)}
+        if self.input.param('no_of_links', 1) > 0:
+            update_spec["percent_of_local_datasets"] = 50
+            update_spec["percent_of_remote_datasets"] = 50
         self.local_cluster.cbas_util.update_cbas_spec(cbas_spec, update_spec)
         
         if self.remote_cluster:
@@ -385,77 +394,7 @@ class volume(BaseTestCase):
             # Revert the simulated error condition and close the ssh session
             error_sim.revert(error_to_simulate)
             remote.disconnect()
-    
-    #used
-    def rebalance(self, cluster, kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0):
-        
-        if kv_nodes_out > 0:
-            cluster_kv_nodes = cluster.cluster_util.get_nodes_from_services_map(
-                service_type="kv", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
-        else:
-            cluster_kv_nodes = []
-        
-        if cbas_nodes_out > 0:
-            cluster_cbas_nodes = cluster.cluster_util.get_nodes_from_services_map(
-                service_type="cbas", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
-        else:
-            cluster_cbas_nodes = []
-        
-        for node in self.exclude_nodes:
-            try:
-                cluster_kv_nodes.remove(node)
-            except:
-                pass
-            try:
-                cluster_cbas_nodes.remove(node)
-            except:
-                pass
-            
-        servs_in = random.sample(self.available_servers, kv_nodes_in+cbas_nodes_in)
-        servs_out = random.sample(cluster_kv_nodes, kv_nodes_out) + random.sample(cluster_cbas_nodes, cbas_nodes_out)
-            
 
-        if kv_nodes_in == kv_nodes_out:
-            self.vbucket_check = False
-
-        services = list()
-        if kv_nodes_in > 0:
-            services += ["kv"] * kv_nodes_in
-        if cbas_nodes_in > 0:
-            services += ["cbas"] * cbas_nodes_in
-
-        rebalance_task = self.task.async_rebalance(
-            cluster.servers, servs_in, servs_out, check_vbucket_shuffling=self.vbucket_check,
-            retry_get_process_num=200, services=services)
-
-        self.available_servers = [servs for servs in self.available_servers if servs not in servs_in]
-        self.available_servers += servs_out
-
-        cluster.servers.extend(servs_in)
-        cluster.servers = list(set(cluster.servers) - set(servs_out))
-        return rebalance_task
-    
-    #used
-    def wait_for_rebalance_to_complete(self, tasks):
-        for task in tasks:
-            self.task.jython_task_manager.get_task_result(task)
-            self.assertTrue(task.result, "Rebalance Failed")
-
-    def set_retry_exceptions(self, doc_loading_spec):
-        """
-        Exceptions for which mutations need to be retried during
-        topology changes
-        """
-        retry_exceptions = list()
-        retry_exceptions.append(SDKException.AmbiguousTimeoutException)
-        retry_exceptions.append(SDKException.TimeoutException)
-        retry_exceptions.append(SDKException.RequestCanceledException)
-        if self.durability_level:
-            retry_exceptions.append(SDKException.DurabilityAmbiguousException)
-            retry_exceptions.append(SDKException.DurabilityImpossibleException)
-        doc_loading_spec[MetaCrudParams.RETRY_EXCEPTIONS] = retry_exceptions
-    
-    #used
     def reload_data_into_buckets(self,cluster):
         """
         Initial data load happens in collections_base. But this method loads
@@ -487,77 +426,26 @@ class volume(BaseTestCase):
         # Prints bucket stats after doc_ops
         cluster.bucket_util.print_bucket_stats()
     
-    #used
-    def wait_for_async_data_load_to_complete(self, tasks):
-        for cluster,task in tasks.iteritems():
-            self.task.jython_task_manager.get_task_result(task)
-            if not self.skip_validations:
-                cluster.bucket_util.validate_doc_loading_results(task)
-                if task.result is False:
-                    self.fail("Doc_loading failed")
-    
-    #used
-    def data_validation_collection(self):
-        for cluster in self.get_clusters(): 
-            retry_count = 0
-            while retry_count < 10:
-                try:
-                    cluster.bucket_util._wait_for_stats_all_buckets()
-                except:
-                    retry_count = retry_count + 1
-                    self.log.info("ep-queue hasn't drained yet. Retry count: {0}".format(retry_count))
-                else:
-                    break
-            if retry_count == 10:
-                self.log.info("Attempting last retry for ep-queue to drain")
-                cluster.bucket_util._wait_for_stats_all_buckets()
-            if self.doc_and_collection_ttl:
-                cluster.bucket_util._expiry_pager(val=5)
-                self.sleep(400, "wait for doc/collection maxttl to finish")
-                items = 0
-                cluster.bucket_util._wait_for_stats_all_buckets()
-                for bucket in cluster.bucket_util.buckets:
-                    items = items + cluster.bucket_helper_obj.get_active_key_count(bucket)
-                if items != 0:
-                    self.fail("doc count!=0, TTL + rebalance failed")
-            else:
-                if not self.skip_validations:
-                    cluster.bucket_util.validate_docs_per_collections_all_buckets()
-                else:
-                    pass
-
-    def wait_for_failover_or_assert(self, cluster_rest, expected_failover_count, timeout=7200):
-        # Timeout is kept large for graceful failover
-        time_start = time.time()
-        time_max_end = time_start + timeout
-        actual_failover_count = 0
-        while time.time() < time_max_end:
-            actual_failover_count = self.get_failover_count(cluster_rest)
-            if actual_failover_count == expected_failover_count:
-                break
-            time.sleep(20)
-        time_end = time.time()
-        if actual_failover_count != expected_failover_count:
-            self.log.info(self.rest.print_UI_logs())
-        self.assertTrue(actual_failover_count == expected_failover_count,
-                        "{0} nodes failed over, expected : {1}"
-                        .format(actual_failover_count,
-                                expected_failover_count))
-        self.log.info("{0} nodes failed over as expected in {1} seconds"
-                      .format(actual_failover_count, time_end - time_start))
-
-    def get_failover_count(self, cluster_rest):
-        cluster_status = cluster_rest.cluster_status()
-        failover_count = 0
-        # check for inactiveFailed
-        for node in cluster_status['nodes']:
-            if node['clusterMembership'] == "inactiveFailed":
-                failover_count += 1
-        return failover_count
-    
-    #used
     def validate_docs_in_datasets(self):
-        pass
+        if self.remote_cluster:
+            self.assertTrue(
+                self.local_cluster.cbas_util.validate_docs_in_all_datasets(
+                    self.local_cluster.bucket_util, self.remote_cluster.bucket_util),
+                "Error while validating doc count in datasets")
+        else:
+            self.assertTrue(
+                self.local_cluster.cbas_util.validate_docs_in_all_datasets(
+                    self.local_cluster.bucket_util, None),
+                "Error while validating doc count in datasets")
+    
+    def get_tasks_results(self, tasks, rebalance=False):
+        results = list()
+        for cluster,task in tasks.iteritems:
+            if rebalance:
+                results.append(cluster.rebalance_util.wait_for_rebalance_task_to_complete(task))
+            else:
+                results.append(cluster.rebalance_util.wait_for_data_load_to_complete(task, self.skip_validations))
+        return results
     
     def perform_ops_on_all_clusters(self, operation, params={}):
         tasks = dict()
@@ -575,6 +463,19 @@ class volume(BaseTestCase):
                     params["cbas_nodes_out"] = 0
                 if any(params.values()):
                     tasks[cluster]= cluster.rebalance_util.rebalance(**params)
+            elif operation == "data_validation_collection":
+                cluster.rebalance_util.data_validation_collection(
+                    self.skip_validations, self.doc_and_collection_ttl)
+            elif operation == "print_bucket_stats":
+                cluster.bucket_util.print_bucket_stats()
+            elif operation == "change_bucket_replica":
+                for i in range(len(cluster.bucket_util.buckets)):
+                    cluster.bucket_helper_obj.change_bucket_props(
+                        cluster.bucket_util.buckets[i], replicaNumber=params["replicaNumber"])
+            elif operation == "rebalance_without_nodes":
+                tasks[cluster] = cluster.rebalance_util.rebalance(**params)
+            elif operation == "failover":
+                cluster.rebalance_util.failover(**params)
         return tasks
 
     def test_volume_taf(self):
@@ -582,43 +483,16 @@ class volume(BaseTestCase):
         self.log.info("Finished steps 1-7 successfully in setup")
         
         while self.loop < self.iterations:
+            step_count = 8
             
-            def all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0):
-                tasks = list()
-                tasks.append(self.rebalance(
-                    cluster=self.local_cluster, kv_nodes_in=kv_nodes_in, kv_nodes_out=kv_nodes_out, 
-                    cbas_nodes_in=cbas_nodes_in, cbas_nodes_out=cbas_nodes_out))
-                if self.remote_cluster:
-                    tasks.append(self.rebalance(
-                        cluster=self.remote_cluster, kv_nodes_in=kv_nodes_in, kv_nodes_out=kv_nodes_out, 
-                        cbas_nodes_in=0, cbas_nodes_out=0))
-                return tasks
-            
-            def print_all_cluster_bucket_stats():
-                for cluster in self.get_clusters():
-                    cluster.bucket_util.print_bucket_stats()
-            
-            def change_bucket_replica(replicaNumber):
-                for cluster in self.get_clusters(): 
-                    for i in range(len(cluster.bucket_util.buckets)):
-                        cluster.bucket_helper_obj.change_bucket_props(
-                            cluster.bucket_util.buckets[i], replicaNumber=replicaNumber)
-            #########################################################################################################################
             if self.test_type == "steady_state":
+                self.log.info("Step {0]: Verifying docs in dataset for steady state test".format(step_count))
                 self.perform_ops_on_all_clusters("reload_data_into_buckets")
-                if self.remote_cluster:
-                    self.assertTrue(
-                        self.local_cluster.cbas_util.validate_docs_in_all_datasets(
-                            self.local_cluster.bucket_util, self.remote_cluster.bucket_util),
-                        "Error while validating doc count in datasets")
-                else:
-                    self.assertTrue(
-                        self.local_cluster.cbas_util.validate_docs_in_all_datasets(
-                            self.local_cluster.bucket_util, None),
-                        "Error while validating doc count in datasets")
+                self.validate_docs_in_datasets()
+                step_count += 1
             else:
                 #########################################################################################################################
-                self.log.info("Step 8: Rebalance in data node on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance in data node on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
                     task_result = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":False, "skip_read_success_results":True})
@@ -627,277 +501,354 @@ class volume(BaseTestCase):
                 rebalance_tasks = self.perform_ops_on_all_clusters(
                     "rebalance", {"kv_nodes_in":1, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_tasks)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 9: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 10: Rebalance in CBAS node on Local cluster with Loading of docs on KV")
+                self.log.info("Step {0}: Rebalance in CBAS node on Local cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=1, cbas_nodes_out=0)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":1, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 11: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 12: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":1, "cbas_nodes_in":0, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 13: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 14: Rebalance In CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance In CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=0, cbas_nodes_in=1, cbas_nodes_out=0)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":1, "kv_nodes_out":0, "cbas_nodes_in":1, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 15: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 16: Rebalance Out data node on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance Out data node on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=0)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":1, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 17: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 18: Rebalance Out CBAS node on Local cluster with Loading of docs on KV")
+                self.log.info("Step {0}: Rebalance Out CBAS node on Local cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 19: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 20: Rebalance In-Out data node on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance In-Out data node on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=2, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=0)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":2, "kv_nodes_out":1, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 21: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 22: Rebalance In-Out CBAS node on Local cluster with Loading of docs on KV")
+                self.log.info("Step {0}: Rebalance In-Out CBAS node on Local cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=2, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":2, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 23: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Rebalance out extra node that was rebalanced-in in last step")
-                self.log.info("Step 24: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                self.log.info("Rebalance out extra node that was rebalanced-in in last step".format(step_count))
+                self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":1, "cbas_nodes_in":0, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 25: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 26: Rebalance In-Out cbas node and data node on both Local cluster and only data node on Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance In-Out cbas node and data node on both Local cluster and only data node on Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=2, kv_nodes_out=1, cbas_nodes_in=2, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":2, "kv_nodes_out":1, "cbas_nodes_in":2, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 27: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #######################################################################################################################
                 self.log.info("Rebalance out extra node that was rebalanced-in in last step")
-                self.log.info("Step 28: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":1, "cbas_nodes_in":0, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 29: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 #########################################################################################################################
-                self.log.info("Step 30: Swap Rebalance KV node on Local and Remote cluster with Loading of docs on KV")
+                self.log.info("Step {0}: Swap Rebalance KV node on Local and Remote cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=1, cbas_nodes_in=0, cbas_nodes_out=0)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":1, "kv_nodes_out":1, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 31: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 ########################################################################################################################
-                self.log.info("Step 32: Swap Rebalance CBAS node on Local cluster with Loading of docs on KV")
+                self.log.info("Step {0}: Swap Rebalance CBAS node on Local cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=1, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":1, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 33: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 ########################################################################################################################
-                self.log.info("Step 34: Swap Rebalance KV and CBAS node on Local Cluster and KV node on Remote cluster with Loading of docs on KV")
+                self.log.info("Step {0}: Swap Rebalance KV and CBAS node on Local Cluster and KV node on Remote cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=1, cbas_nodes_in=1, cbas_nodes_out=1)
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":1, "kv_nodes_out":1, "cbas_nodes_in":1, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 35: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 ########################################################################################################################
-                self.log.info("Step 36: Updating the bucket replica to 2 on Local and Remote cluster")
+                self.log.info("Step {0}: Updating the bucket replica to 2 on Local and Remote cluster".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                change_bucket_replica(replicaNumber=2)
-                rebalance_task = all_rebalance(kv_nodes_in=1, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
+                self.perform_ops_on_all_clusters("change_bucket_replica", {"replicaNumber":2})
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance", {"kv_nodes_in":1, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 37: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
                 ########################################################################################################################
                 if self.contains_ephemeral:
                     self.log.info("No Memcached kill for ephemeral bucket")
                 else:
-                    self.log.info("Step 38: Stopping and restarting memcached process")
+                    self.log.info("Step {0}: Stopping and restarting memcached process".format(step_count))
                     if self.data_load_stage == "before":
-                        task = self.data_load_collection(async_load=False)
-                        if task.result is False:
+                        task_result = self.perform_ops_on_all_clusters(
+                            "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                        if not all(task_result.values()):
                             self.fail("Doc loading failed")
-                    rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
+                    rebalance_tasks = self.perform_ops_on_all_clusters(
+                        "rebalance", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":0})
                     if self.data_load_stage == "during":
-                        task = self.data_load_collection()
-                    self.wait_for_rebalance_to_complete(rebalance_task)
+                        dataload_task = self.perform_ops_on_all_clusters(
+                            "data_load_collection", {"async_load":True, "skip_read_success_results":True})
+                    self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                     self.stop_process()
                     if self.data_load_stage == "during":
-                        self.wait_for_async_data_load_to_complete(task)
-                    self.data_validation_collection()
-                    print_all_cluster_bucket_stats()
-                    self.log.info("Step 39: Validating doc count in datasets.")
+                        self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                    self.perform_ops_on_all_clusters("data_validation_collection")
+                    self.perform_ops_on_all_clusters("print_bucket_stats")
+                    step_count += 1
+                    self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                     self.validate_docs_in_datasets()
+                    step_count += 1
                 ########################################################################################################################
-                step_count = 39
                 for failover in ["Graceful", "Hard"]:
                     for action in ["RebalanceOut", "FullRecovery", "DeltaRecovery"]:
                         for service_type in ["kv", "cbas", "kv-cbas"]:
                             if (service_type in ["cbas","kv-cbas"]) and (failover == "Graceful" or action == "DeltaRecovery"):
                                 continue
                             else:
-                                step_count = step_count + 1
                                 self.log.info(
                                     "Step {0}: {1} Failover a node and {2} that node with data load in parallel".format(step_count,
                                                                                                                         failover,
                                                                                                                         action))
                                 if self.data_load_stage == "before":
-                                    task = self.data_load_collection(async_load=False)
-                                    if task.result is False:
+                                    task_result = self.perform_ops_on_all_clusters(
+                                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                                    if not all(task_result.values()):
                                         self.fail("Doc loading failed")
                                 
                                 if self.data_load_stage == "during":
@@ -907,82 +858,18 @@ class volume(BaseTestCase):
                                         self.log.info("Forcing durability level: MAJORITY")
                                         self.durability_level = "MAJORITY"
                                         reset_flag = True
-                                    task = self.data_load_collection()
+                                    dataload_task = self.perform_ops_on_all_clusters(
+                                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                                     if reset_flag:
                                         self.durability_level = ""
                                 
-                                for cluster in self.get_clusters():
-                                    if "kv" in service_type:
-                                        cluster_kv_nodes = cluster.cluster_util.get_nodes_from_services_map(
-                                            service_type="kv", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
-                                    else:
-                                        cluster_kv_nodes = []
-                                    
-                                    if "cbas" in service_type:
-                                        cluster_cbas_nodes = cluster.cluster_util.get_nodes_from_services_map(
-                                            service_type="cbas", get_all_nodes=True, servers=cluster.servers, master=cluster.master)
-                                    else:
-                                        cluster_cbas_nodes = []
-                                    
-                                    for node in self.exclude_nodes:
-                                        try:
-                                            cluster_kv_nodes.remove(node)
-                                        except:
-                                            pass
-                                        try:
-                                            cluster_cbas_nodes.remove(node)
-                                        except:
-                                            pass
-                                    
-                                    failover_count = 0
-                                    failover_nodes = []
-                                    cluster.success_kv_failed_over = False
-                                    cluster.success_cbas_failed_over = False
-                                    # Mark Node for failover
-                                    if failover == "Graceful":
-                                        cluster.success_kv_failed_over = cluster.rest.fail_over(cluster_kv_nodes[0], graceful=True)
-                                        failover_count += 1
-                                        failover_nodes.append(cluster_kv_nodes[0])
-                                    else:
-                                        if "kv" in service_type:
-                                            cluster.success_kv_failed_over = cluster.rest.fail_over(cluster_kv_nodes[0], graceful=True)
-                                            failover_count += 1
-                                            failover_nodes.append(cluster_kv_nodes[0])
-                                        if "cbas" in service_type and cluster_cbas_nodes:
-                                            cluster.success_cbas_failed_over = cluster.rest.fail_over(cluster_cbas_nodes[0], graceful=True)
-                                            failover_count += 1
-                                            failover_nodes.append(cluster_cbas_nodes[0])
-                                    self.sleep(300)
-                                    self.wait_for_failover_or_assert(cluster.rest, failover_count)
-    
-                                    # Perform the action
-                                    if action == "RebalanceOut":
-                                        nodes = cluster.rest.node_statuses()
-                                        cluster.rest.rebalance(
-                                            otpNodes=[node.id for node in nodes], ejectedNodes=[node.ip for node in failover_nodes])
-                                        # self.sleep(600)
-                                        self.assertTrue(cluster.rest.monitorRebalance(stop_if_loop=False), msg="Rebalance failed")
-                                        cluster.servers = list(set(cluster.servers) - set(failover_nodes))
-                                        self.available_servers += failover_nodes
-                                        self.sleep(10)
-                                    else:
-                                        if action == "FullRecovery":
-                                            if cluster.success_kv_failed_over:
-                                                cluster.rest.set_recovery_type(otpNode=cluster_kv_nodes[0].id, recoveryType="full")
-                                            if cluster.success_cbas_failed_over:
-                                                cluster.rest.set_recovery_type(otpNode=cluster_cbas_nodes[0].id, recoveryType="full")
-                                        elif action == "DeltaRecovery":
-                                            if cluster.success_kv_failed_over:
-                                                cluster.rest.set_recovery_type(otpNode=cluster_kv_nodes[0].id, recoveryType="delta")
-                
-                                        rebalance_task = self.task.async_rebalance(
-                                            cluster.servers, [], [], retry_get_process_num=200)
-                                        self.wait_for_rebalance_to_complete([rebalance_task])
-                                        self.sleep(10)
-    
+                                self.perform_ops_on_all_clusters(
+                                    "failover", {"failover_type":failover, "action":action, "service_type":service_type, "timeout":7200})
+                                
                                 if self.data_load_stage == "during":
-                                    self.wait_for_async_data_load_to_complete(task)
-                                self.data_validation_collection()
+                                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                                    
+                                self.perform_ops_on_all_clusters("data_validation_collection")
     
                                 # Bring back the rebalance out node back to cluster for further steps
                                 if action == "RebalanceOut":
@@ -993,32 +880,38 @@ class volume(BaseTestCase):
                                         kv_nodes_in = 1
                                     if service_type in ["cbas", "kv-cbas"]:
                                         cbas_nodes_in = 1
-                                    rebalance_task = all_rebalance(
-                                        kv_nodes_in=kv_nodes_in, kv_nodes_out=0, cbas_nodes_in=cbas_nodes_in, cbas_nodes_out=0)
-                                    self.wait_for_rebalance_to_complete(rebalance_task)
-                                print_all_cluster_bucket_stats()
-                                step_count = step_count + 1
+                                    rebalance_tasks = self.perform_ops_on_all_clusters(
+                                        "rebalance", {"kv_nodes_in":kv_nodes_in, "kv_nodes_out":0, "cbas_nodes_in":cbas_nodes_in, "cbas_nodes_out":0})
+                                    self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                                self.perform_ops_on_all_clusters("print_bucket_stats")
+                                step_count += 1
                                 self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                                 self.validate_docs_in_datasets()
+                                step_count += 1
                 ########################################################################################################################
-                self.log.info("Step 60: Updating the bucket replica to 1 on Local and Remote cluster")
+                self.log.info("Step {0}: Updating the bucket replica to 1 on Local and Remote cluster".format(step_count))
                 if self.data_load_stage == "before":
-                    task_result = self.data_load_collection(async_load=False)
-                    if task_result is False:
+                    task_result = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":False, "skip_read_success_results":True})
+                    if not all(task_result.values()):
                         self.fail("Doc loading failed")
-                change_bucket_replica(replicaNumber=1)
-                rebalance_task = all_rebalance(kv_nodes_in=0, kv_nodes_out=0, cbas_nodes_in=0, cbas_nodes_out=0)
+                self.perform_ops_on_all_clusters("change_bucket_replica", {"replicaNumber":1})
+                rebalance_tasks = self.perform_ops_on_all_clusters(
+                    "rebalance_without_nodes", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
-                    task = self.data_load_collection()
-                self.wait_for_rebalance_to_complete(rebalance_task)
+                    dataload_task = self.perform_ops_on_all_clusters(
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})()
+                self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
-                    self.wait_for_async_data_load_to_complete(task)
-                self.data_validation_collection()
-                print_all_cluster_bucket_stats()
-                self.log.info("Step 61: Validating doc count in datasets.")
+                    self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
+                self.perform_ops_on_all_clusters("data_validation_collection")
+                self.perform_ops_on_all_clusters("print_bucket_stats")
+                step_count += 1
+                self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
+                step_count += 1
             ########################################################################################################################
-            self.log.info("Step 62: Flush bucket(s) and start the entire process again")
+            self.log.info("Step {0}: Flush bucket(s) and start the entire process again".format(step_count))
             self.loop += 1
             if self.loop < self.iterations:
                 cluster_init_dict = {self.local_cluster:self.nodes_init}
