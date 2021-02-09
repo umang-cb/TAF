@@ -301,6 +301,11 @@ class volume(BaseTestCase):
             self.bucket_spec)
         doc_loading_spec = \
             bucket_util.get_crud_template_from_package(self.data_load_spec)
+        
+        num_of_buckets = buckets_spec[MetaConstants.NUM_BUCKETS]
+        buckets_spec["buckets"] = {}
+        for i in range(1,num_of_buckets+1):
+            buckets_spec["buckets"]["bucket_{0}".format(i)] = {}
 
         # Process params to over_ride values if required
         self.over_ride_bucket_template_params(buckets_spec,cluster)
