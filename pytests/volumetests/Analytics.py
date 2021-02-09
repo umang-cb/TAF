@@ -301,15 +301,15 @@ class volume(BaseTestCase):
             self.bucket_spec)
         doc_loading_spec = \
             bucket_util.get_crud_template_from_package(self.data_load_spec)
+
+        # Process params to over_ride values if required
+        self.over_ride_bucket_template_params(buckets_spec,cluster)
+        self.over_ride_doc_loading_template_params(doc_loading_spec)
         
         num_of_buckets = buckets_spec[MetaConstants.NUM_BUCKETS]
         buckets_spec["buckets"] = {}
         for i in range(1,num_of_buckets+1):
             buckets_spec["buckets"]["bucket_{0}".format(i)] = {}
-
-        # Process params to over_ride values if required
-        self.over_ride_bucket_template_params(buckets_spec,cluster)
-        self.over_ride_doc_loading_template_params(doc_loading_spec)
 
         # MB-38438, adding CollectionNotFoundException in retry exception
         doc_loading_spec[MetaCrudParams.RETRY_EXCEPTIONS].append(
@@ -673,7 +673,7 @@ class volume(BaseTestCase):
                 step_count += 1
                 #########################################################################################################################
                 self.log.info("Rebalance out extra node that was rebalanced-in in last step".format(step_count))
-                self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs")
+                self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
                     task_result = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":False, "skip_read_success_results":True})
@@ -701,7 +701,7 @@ class volume(BaseTestCase):
                     if not all(task_result.values()):
                         self.fail("Doc loading failed")
                 rebalance_tasks = self.perform_ops_on_all_clusters(
-                    "rebalance", {"kv_nodes_in":2, "kv_nodes_out":1, "cbas_nodes_in":2, "cbas_nodes_out":1})
+                    "rebalance", {"kv_nodes_in":1, "kv_nodes_out":1, "cbas_nodes_in":1, "cbas_nodes_out":1})
                 if self.data_load_stage == "during":
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
