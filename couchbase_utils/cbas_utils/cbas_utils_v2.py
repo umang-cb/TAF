@@ -3857,6 +3857,17 @@ class CBASRebalanceUtil(object):
             retry_exceptions.append(SDKException.DurabilityImpossibleException)
         doc_loading_spec[MetaCrudParams.RETRY_EXCEPTIONS] = retry_exceptions
     
+    @staticmethod
+    def set_ignore_exceptions(doc_loading_spec):
+        """
+        Exceptions to be ignored.
+        Ignoring DocumentNotFoundExceptions because there could be race conditons
+        eg: reads or deletes before creates
+        """
+        ignore_exceptions = list()
+        ignore_exceptions.append(SDKException.DocumentNotFoundException)
+        doc_loading_spec[MetaCrudParams.IGNORE_EXCEPTIONS] = ignore_exceptions
+    
     def wait_for_data_load_to_complete(self, task, skip_validations):
         self.task.jython_task_manager.get_task_result(task)
         if not skip_validations:
@@ -3868,6 +3879,7 @@ class CBASRebalanceUtil(object):
         
         doc_loading_spec = self.bucket_util.get_crud_template_from_package(doc_spec_name)
         self.set_retry_exceptions(doc_loading_spec)
+        self.set_ignore_exceptions(doc_loading_spec)
         doc_loading_spec[MetaCrudParams.DURABILITY_LEVEL] = self.durability_level
         doc_loading_spec[MetaCrudParams.SKIP_READ_SUCCESS_RESULTS] = skip_read_success_results
         task = self.bucket_util.run_scenario_from_spec(
