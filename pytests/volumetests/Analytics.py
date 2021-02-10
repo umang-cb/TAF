@@ -243,6 +243,8 @@ class volume(BaseTestCase):
                 cbas_spec, self.local_cluster.bucket_util,wait_for_ingestion=False):
                 self.fail("Error while creating infra from CBAS spec")
         
+        self.perform_ops_on_all_clusters("set_durability", {"durability_level": self.durability_level})
+        
         # start parallel query execution on KV and CBAS
         for cluster in self.get_clusters():
             if cluster.rebalance_util.cbas_util:
@@ -488,6 +490,13 @@ class volume(BaseTestCase):
                 tasks[cluster] = cluster.rebalance_util.rebalance(**params)
             elif operation == "failover":
                 cluster.rebalance_util.failover(**params)
+            elif operation == "set_durability":
+                cluster.rebalance_util.durability_level = params["durability_level"]
+            elif operation == "check_durability_level":
+                if cluster.rebalance_util.durability_level == params["durability_level"]:
+                    tasks[cluster] = True
+                else:
+                    tasks[cluster] = False
         return tasks
 
     def test_volume_taf(self):
@@ -847,7 +856,7 @@ class volume(BaseTestCase):
                     self.validate_docs_in_datasets()
                     step_count += 1"""
                 ########################################################################################################################
-                for failover in ["Graceful", "Hard"]:
+                for failover in ["Hard"]:
                     for action in ["RebalanceOut", "FullRecovery", "DeltaRecovery"]:
                         for service_type in ["kv", "cbas", "kv-cbas"]:
                             if (service_type in ["cbas","kv-cbas"]) and (failover == "Graceful" or action == "DeltaRecovery"):
@@ -865,15 +874,19 @@ class volume(BaseTestCase):
                                 
                                 if self.data_load_stage == "during":
                                     reset_flag = False
-                                    if (not self.durability_level) and failover == "Hard" and "kv" in service_type:
-                                        # Force a durability level to prevent data loss during hard failover
-                                        self.log.info("Forcing durability level: MAJORITY")
-                                        self.durability_level = "MAJORITY"
-                                        reset_flag = True
+                                    if failover == "Hard" and "kv" in service_type:
+                                        if all(self.perform_ops_on_all_clusters(
+                                            "check_durability_level", {"durability_level": ""}).values()):
+                                            # Force a durability level to prevent data loss during hard failover
+                                            self.log.info("Forcing durability level: MAJORITY")
+                                            self.perform_ops_on_all_clusters(
+                                                "set_durability", {"durability_level": "MAJORITY"})
+                                            reset_flag = True
                                     dataload_task = self.perform_ops_on_all_clusters(
                                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                                     if reset_flag:
-                                        self.durability_level = ""
+                                        self.perform_ops_on_all_clusters(
+                                                "set_durability", {"durability_level": ""})
                                 
                                 self.perform_ops_on_all_clusters(
                                     "failover", {"failover_type":failover, "action":action, "service_type":service_type, "timeout":7200})
