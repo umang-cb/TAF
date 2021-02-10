@@ -3880,6 +3880,7 @@ class CBASRebalanceUtil(object):
         doc_loading_spec = self.bucket_util.get_crud_template_from_package(doc_spec_name)
         self.set_retry_exceptions(doc_loading_spec)
         self.set_ignore_exceptions(doc_loading_spec)
+        print "\n\n Durability Level - {0}\n\n".format(self.durability_level)
         doc_loading_spec[MetaCrudParams.DURABILITY_LEVEL] = self.durability_level
         doc_loading_spec[MetaCrudParams.SKIP_READ_SUCCESS_RESULTS] = skip_read_success_results
         task = self.bucket_util.run_scenario_from_spec(
