@@ -857,16 +857,15 @@ class volume(BaseTestCase):
                     self.validate_docs_in_datasets()
                     step_count += 1"""
                 ########################################################################################################################
-                for failover in ["Hard"]:
+                """for failover in ["Hard"]:
                     for action in ["RebalanceOut", "FullRecovery", "DeltaRecovery"]:
                         for service_type in ["kv", "cbas", "kv-cbas"]:
                             if (service_type in ["cbas","kv-cbas"]) and (failover == "Graceful" or action == "DeltaRecovery"):
                                 continue
                             else:
                                 self.log.info(
-                                    "Step {0}: {1} Failover a node and {2} that node with data load in parallel".format(step_count,
-                                                                                                                        failover,
-                                                                                                                        action))
+                                    "Step {0}: {1} Failover a {2} node and {3} that node with data load in parallel".format(
+                                        step_count, failover, service_type, action))
                                 if self.data_load_stage == "before":
                                     task_result = self.perform_ops_on_all_clusters(
                                         "data_load_collection", {"async_load":False, "skip_read_success_results":True})
@@ -914,7 +913,7 @@ class volume(BaseTestCase):
                                 step_count += 1
                                 self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                                 self.validate_docs_in_datasets()
-                                step_count += 1
+                                step_count += 1"""
                 ########################################################################################################################
                 self.log.info("Step {0}: Updating the bucket replica to 1 on Local and Remote cluster".format(step_count))
                 if self.data_load_stage == "before":
@@ -927,7 +926,7 @@ class volume(BaseTestCase):
                     "rebalance_without_nodes", {"kv_nodes_in":0, "kv_nodes_out":0, "cbas_nodes_in":0, "cbas_nodes_out":0})
                 if self.data_load_stage == "during":
                     dataload_task = self.perform_ops_on_all_clusters(
-                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})()
+                        "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
