@@ -876,6 +876,7 @@ class volume(BaseTestCase):
                                 if self.data_load_stage == "during":
                                     reset_flag = False
                                     if failover == "Hard" and "kv" in service_type:
+                                        self.skip_validations = False
                                         if all(self.perform_ops_on_all_clusters(
                                             "check_durability_level", {"durability_level": ""}).values()):
                                             # Force a durability level to prevent data loss during hard failover
