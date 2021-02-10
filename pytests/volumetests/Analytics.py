@@ -459,6 +459,7 @@ class volume(BaseTestCase):
                 results.append(cluster.rebalance_util.wait_for_rebalance_task_to_complete(task))
             else:
                 results.append(cluster.rebalance_util.wait_for_data_load_to_complete(task, self.skip_validations))
+        print "\n\n Task results - {0}\n\n".format(str(results))
         return results
     
     def perform_ops_on_all_clusters(self, operation, params={}):
