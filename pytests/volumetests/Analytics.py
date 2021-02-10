@@ -523,7 +523,7 @@ class volume(BaseTestCase):
                 step_count += 1
                 self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
-                step_count += 1
+                step_count += 1"""
                 #########################################################################################################################
                 self.log.info("Step {0}: Rebalance in CBAS node on Local cluster with Loading of docs on KV".format(step_count))
                 if self.data_load_stage == "before":
@@ -546,7 +546,7 @@ class volume(BaseTestCase):
                 self.validate_docs_in_datasets()
                 step_count += 1
                 #########################################################################################################################
-                self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
+                """self.log.info("Step {0}: Rebalance out CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
                     task_result = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":False, "skip_read_success_results":True})
@@ -565,7 +565,7 @@ class volume(BaseTestCase):
                 step_count += 1
                 self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
-                step_count += 1"""
+                step_count += 1
                 #########################################################################################################################
                 self.log.info("Step {0}: Rebalance In CBAS node on Local cluster and data and on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
@@ -588,7 +588,7 @@ class volume(BaseTestCase):
                 self.validate_docs_in_datasets()
                 step_count += 1
                 #########################################################################################################################
-                """self.log.info("Step {0}: Rebalance Out data node on both Local and Remote cluster with Loading of docs".format(step_count))
+                self.log.info("Step {0}: Rebalance Out data node on both Local and Remote cluster with Loading of docs".format(step_count))
                 if self.data_load_stage == "before":
                     task_result = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":False, "skip_read_success_results":True})
@@ -798,7 +798,7 @@ class volume(BaseTestCase):
                 step_count += 1
                 self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
                 self.validate_docs_in_datasets()
-                step_count += 1
+                step_count += 1"""
                 ########################################################################################################################
                 self.log.info("Step {0}: Updating the bucket replica to 2 on Local and Remote cluster".format(step_count))
                 if self.data_load_stage == "before":
@@ -822,7 +822,7 @@ class volume(BaseTestCase):
                 self.validate_docs_in_datasets()
                 step_count += 1
                 ########################################################################################################################
-                if self.contains_ephemeral:
+                """if self.contains_ephemeral:
                     self.log.info("No Memcached kill for ephemeral bucket")
                 else:
                     self.log.info("Step {0}: Stopping and restarting memcached process".format(step_count))
