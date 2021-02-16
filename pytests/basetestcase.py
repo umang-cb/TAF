@@ -237,7 +237,7 @@ class BaseTestCase(unittest.TestCase):
                         ClusterRun.memcached_port \
                         + (2 * (int(server.port) - ClusterRun.port))
 
-        self.log_setup_status("BaseTestCase", "started")
+        self.log_setup_status(self.__class__.__name__, "started")
         if len(self.input.clusters) > 1:
             # Multi cluster setup
             counter = 1
@@ -389,7 +389,7 @@ class BaseTestCase(unittest.TestCase):
             o, e = shell.execute_command("yum install -y screen")
             shell.log_command_output(o, e)
             # Execute the tcpdump command
-            tcp_cmd = "screen -dmS test bash -c \"tcpdump -C 500 " \
+            tcp_cmd = "screen -dmS test bash -c \"tcpdump -C 500 -W 10 " \
                       "-w pcaps/pack-dump-file.pcap  -i eth0 -s 0 tcp\""
             o, e = shell.execute_command(tcp_cmd)
             shell.log_command_output(o, e)
@@ -736,8 +736,8 @@ class BaseTestCase(unittest.TestCase):
                     "ls " + os.path.join(logs_dir, file_data['file']))[0]
 
                 if len(log_files) == 0:
-                    self.log.warning("%s: No '%s' files found"
-                                     % (server.ip, file_data['file']))
+                    self.log.debug("%s: No '%s' files found"
+                                   % (server.ip, file_data['file']))
                     continue
 
                 if 'target_file_index' in file_data:

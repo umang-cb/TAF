@@ -1,21 +1,20 @@
 import threading
 import time
 import urllib
+import random
 
 from com.couchbase.client.java import *
 from com.couchbase.client.java.json import *
 from com.couchbase.client.java.query import *
-
 from collections_helper.collections_spec_constants import MetaCrudParams
 from membase.api.rest_client import RestConnection, RestHelper
 from TestInput import TestInputSingleton
-import random
 from BucketLib.BucketOperations import BucketHelper
 from remote.remote_util import RemoteMachineShellConnection
 from error_simulation.cb_error import CouchbaseError
 from bucket_collections.collections_base import CollectionBase
-
 from sdk_exceptions import SDKException
+from StatsLib.StatsOperations import StatsHelper
 
 
 class volume(CollectionBase):
@@ -33,6 +32,8 @@ class volume(CollectionBase):
         self.vbucket_check = self.input.param("vbucket_check", True)
         self.data_load_spec = self.input.param("data_load_spec", "volume_test_load_for_volume_test")
         self.contains_ephemeral = self.input.param("contains_ephemeral", True)
+        self.rebalance_moves_per_node = self.input.param("rebalance_moves_per_node", 4)
+        self.cluster_util.set_rebalance_moves_per_nodes(rebalanceMovesPerNode=self.rebalance_moves_per_node)
 
         self.doc_and_collection_ttl = self.input.param("doc_and_collection_ttl", False)  # For using doc_ttl + coll_ttl
         self.skip_validations = self.input.param("skip_validations", True)
@@ -64,13 +65,20 @@ class volume(CollectionBase):
             self.build_deferred_indexes(indexes_to_build)
         self.query_thread_flag = False
         self.query_thread = None
+        self.ui_stats_thread_flag = False
+        self.ui_stats_thread = None
 
     def tearDown(self):
         # Do not call the base class's teardown, as we want to keep the cluster intact after the volume run
         if self.query_thread:
+            # Join query thread
             self.query_thread_flag = False
             self.query_thread.join()
             self.query_thread = None
+            # Join ui_stats thread
+            self.ui_stats_thread_flag = False
+            self.ui_stats_thread.join()
+            self.ui_stats_thread = None
         self.log.info("Printing bucket stats before teardown")
         self.bucket_util.print_bucket_stats()
         if self.collect_pcaps:
@@ -189,17 +197,27 @@ class volume(CollectionBase):
                 #time.sleep(1)
         self.log.info("Stopping select queries")
 
-    # Stopping and restarting the memcached process
-    def stop_process(self):
-        target_node = self.servers[2]
+    def run_ui_stats_queries(self):
+        """
+        Runs UI stats queries in a loop in a seperate thread unitl the thread is asked for to join
+        """
+        self.log.info("Starting to poll UI stats queries")
+        while self.ui_stats_thread_flag:
+            for bucket in self.bucket_util.buckets:
+                _ = StatsHelper(self.cluster.master).post_range_api_metrics(bucket.name)
+                self.sleep(10)
+
+    # Inducing and reverting failures wrt memcached/prometheus process
+    def induce_and_revert_failure(self, action):
+        target_node = self.servers[-1] # select last node
         remote = RemoteMachineShellConnection(target_node)
         error_sim = CouchbaseError(self.log, remote)
-        error_to_simulate = "stop_memcached"
-        # Induce the error condition
-        error_sim.create(error_to_simulate)
+        error_sim.create(action)
         self.sleep(20, "Wait before reverting the error condition")
-        # Revert the simulated error condition and close the ssh session
-        error_sim.revert(error_to_simulate)
+        if action in [CouchbaseError.STOP_MEMCACHED, CouchbaseError.STOP_PROMETHEUS]:
+            # Revert the simulated error condition explicitly. In kill memcached, prometheus
+            # babysitter will bring back the process automatically
+            error_sim.revert(action)
         remote.disconnect()
 
     def rebalance(self, nodes_in=0, nodes_out=0):
@@ -374,9 +392,14 @@ class volume(CollectionBase):
         self.loop = 0
         # self.cluster_utils.set_metadata_purge_interval()
         if self.number_of_indexes > 0:
+            # start running select queries thread
             self.query_thread = threading.Thread(target=self.run_select_query)
             self.query_thread_flag = True
             self.query_thread.start()
+            # Start running ui stats queries thread
+            self.ui_stats_thread = threading.Thread(target=self.run_ui_stats_queries)
+            self.ui_stats_thread_flag = True
+            self.ui_stats_thread.start()
         self.log.info("Finished steps 1-4 successfully in setup")
         while self.loop < self.iterations:
             if self.loop > 0 or self.flush_buckets_before_indexes_creation:
@@ -428,19 +451,28 @@ class volume(CollectionBase):
             self.data_validation_collection()
             self.bucket_util.print_bucket_stats()
             ########################################################################################################################
-            if self.contains_ephemeral:
-                self.log.info("No Memcached kill for ephemeral bucket")
-            else:
-                self.log.info("Step 10: Stopping and restarting memcached process")
-                rebalance_task = self.task.async_rebalance(self.cluster.servers, [], [], retry_get_process_num=200)
+            self.log.info("Enabling autoreprovison before inducing failure to prevent data loss "
+                          "for if there are ephemeral buckets")
+            status = self.rest.update_autoreprovision_settings(True, maxNodes=1)
+            if not status:
+                self.fail("Failed to enable autoreprovison")
+            step_count = 9
+            for action in [CouchbaseError.STOP_MEMCACHED, CouchbaseError.STOP_PROMETHEUS]:
+                step_count = step_count + 1
+                self.log.info("Step {0}: {1}".format(step_count, action))
+                self.log.info("Forcing durability level: MAJORITY")
+                self.durability_level = "MAJORITY"
                 task = self.data_load_collection()
+                self.induce_and_revert_failure(action)
+                # Rebalance is required after error is reverted
+                rebalance_task = self.task.async_rebalance(self.cluster.servers, [], [], retry_get_process_num=200)
                 self.wait_for_rebalance_to_complete(rebalance_task)
-                self.stop_process()
                 self.wait_for_async_data_load_to_complete(task)
                 self.data_validation_collection()
                 self.bucket_util.print_bucket_stats()
+            self.durability_level = ""
             ########################################################################################################################
-            step_count = 10
+            step_count = 11
             for failover in ["Graceful", "Hard"]:
                 for action in ["RebalanceOut", "FullRecovery", "DeltaRecovery"]:
                     step_count = step_count + 1
@@ -537,7 +569,7 @@ class volume(CollectionBase):
                         self.wait_for_rebalance_to_complete(rebalance_task)
                     self.bucket_util.print_bucket_stats()
             ########################################################################################################################
-            self.log.info("Step 17: Updating the bucket replica to 1")
+            self.log.info("Step 18: Updating the bucket replica to 1")
             bucket_helper = BucketHelper(self.cluster.master)
             for i in range(len(self.bucket_util.buckets)):
                 bucket_helper.change_bucket_props(
@@ -550,7 +582,7 @@ class volume(CollectionBase):
             self.tasks = []
             self.bucket_util.print_bucket_stats()
             ########################################################################################################################
-            self.log.info("Step 18: Flush bucket(s) and start the entire process again")
+            self.log.info("Step 19: Flush bucket(s) and start the entire process again")
             self.loop += 1
             if self.loop < self.iterations:
                 # Flush buckets(s)
@@ -568,8 +600,13 @@ class volume(CollectionBase):
                     self.cluster.nodes_in_cluster = list(set(self.cluster.nodes_in_cluster) - set(servs_out))
             else:
                 if self.number_of_indexes > 0:
+                    # Join query thread
                     self.query_thread_flag = False
                     self.query_thread.join()
                     self.query_thread = None
+                    # Join ui_stats thread
+                    self.ui_stats_thread_flag = False
+                    self.ui_stats_thread.join()
+                    self.ui_stats_thread = None
                 self.log.info("Volume Test Run Complete")
         ############################################################################################################################

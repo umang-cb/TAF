@@ -1,4 +1,4 @@
-
+# -*- coding: utf-8 -*-
 import base64
 import json
 import urllib
@@ -1262,14 +1262,15 @@ class RestConnection(object):
         if break_out >= 60:
             raise Exception("Couchbase server did not start after 60 seconds")
 
-    def fail_over(self, otpNode=None, graceful=False):
+    def fail_over(self, otpNode=None, graceful=False, allowUnsafe=False):
         if otpNode is None:
             self.test_log.error('Required otpNode parameter')
             return False
         api = self.baseUrl + 'controller/failOver'
+        params = urllib.urlencode({'otpNode': otpNode, 'allowUnsafe': allowUnsafe})
         if graceful:
             api = self.baseUrl + 'controller/startGracefulFailover'
-        params = urllib.urlencode({'otpNode': otpNode})
+            params = urllib.urlencode({'otpNode': otpNode})
         status, content, header = self._http_request(api, 'POST', params)
         if status:
             self.test_log.debug('{0} - Failover successful'.format(otpNode))
@@ -1421,7 +1422,7 @@ class RestConnection(object):
                     same_progress_count = 0
                 else:
                     same_progress_count += 1
-                if same_progress_count > 50:
+                if same_progress_count > 500:
                     self.test_log.error("Rebalance progress code in "
                                         "infinite loop: %s" % progress)
                     return False
