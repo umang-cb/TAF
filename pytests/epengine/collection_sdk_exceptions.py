@@ -79,8 +79,13 @@ class SDKExceptionTests(CollectionBase):
                 self.log_failure("vBucket_details validation failed")
             self.bucket_util.validate_docs_per_collections_all_buckets()
 
+        num_cols_in_bucket = 0
+        for _, scope in self.bucket.scopes.items():
+            for _, _ in scope.collections.items():
+                num_cols_in_bucket += 1
+
         verification_dict = dict()
-        verification_dict["ops_create"] = 0
+        verification_dict["ops_create"] = num_cols_in_bucket * self.num_items
         verification_dict["ops_update"] = 0
         verification_dict["ops_delete"] = 0
         verification_dict["rollback_item_count"] = 0
@@ -118,7 +123,8 @@ class SDKExceptionTests(CollectionBase):
             key, value = doc_gen.next()
             result = client.crud("create", key, value,
                                  exp=doc_ttl,
-                                 durability=self.durability_level)
+                                 durability=self.durability_level,
+                                 timeout=30)
             if self.collection_name == CbServer.default_collection:
                 if result["status"] is False:
                     self.log_failure("Create doc failed for key: %s" % key)
@@ -134,7 +140,7 @@ class SDKExceptionTests(CollectionBase):
                                  % key)
             elif SDKException.AmbiguousTimeoutException \
                     not in str(result["error"]) \
-                    or SDKException.RetryReason.KV_COLLECTION_OUTDATED \
+                    or SDKException.RetryReason.COLLECTION_NOT_FOUND \
                     not in str(result["error"]):
                 self.log_failure("Invalid exception for key %s: %s"
                                  % (key, result["error"]))

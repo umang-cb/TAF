@@ -313,6 +313,14 @@ class BucketHelper(RestConnection):
             init_params[Bucket.replicaIndex] = bucket_params.get('replicaIndex')
             init_params[Bucket.compressionMode] = bucket_params.get('compressionMode')
             init_params[Bucket.maxTTL] = bucket_params.get('maxTTL')
+        if bucket_params.get("bucketType") == Bucket.Type.MEMBASE and\
+           'autoCompactionDefined' in bucket_params:
+            init_params["autoCompactionDefined"] = bucket_params.get('autoCompactionDefined')
+            init_params["parallelDBAndViewCompaction"] = "false"
+            init_params["databaseFragmentationThreshold%5Bpercentage%5D"] = 50
+            init_params["viewFragmentationThreshold%5Bpercentage%5D"] = 50
+            init_params["indexCompactionMode"] = "circular"
+            init_params["purgeInterval"] = 3
 
         if init_params[Bucket.priority] == "high":
             init_params[Bucket.threadsNumber] = Bucket.Priority.HIGH

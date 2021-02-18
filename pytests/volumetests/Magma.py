@@ -523,21 +523,9 @@ class volume(BaseTestCase):
             bucket.name, dgm))
         return dgm
 
-    # Stopping and restarting the memcached process
-    def stop_process(self):
-        target_node = self.servers[2]
-        remote = RemoteMachineShellConnection(target_node)
-        error_sim = CouchbaseError(self.log, remote)
-        error_to_simulate = "stop_memcached"
-        # Induce the error condition
-        error_sim.create(error_to_simulate)
-        self.sleep(20, "Wait before reverting the error condition")
-        # Revert the simulated error condition and close the ssh session
-        error_sim.revert(error_to_simulate)
-        remote.disconnect()
-
-    def _induce_error(self, error_condition):
-        for node in self.cluster.nodes_in_cluster:
+    def _induce_error(self, error_condition, nodes=[]):
+        nodes = nodes or [self.cluster.master]
+        for node in nodes:
             if error_condition == "stop_server":
                 self.cluster_util.stop_server(node)
             elif error_condition == "enable_firewall":
@@ -1218,11 +1206,6 @@ class volume(BaseTestCase):
                 servers=nodes, buckets=self.bucket_util.buckets,
                 num_replicas=self.num_replicas,
                 std=std, total_vbuckets=self.cluster_util.vbuckets)
-#             rebalance_task = self.rebalance(nodes_in=1, nodes_out=0)
-#             self.task.jython_task_manager.get_task_result(rebalance_task)
-#             self.bucket_util.print_bucket_stats()
-#             self.print_crud_stats()
-#             self.get_bucket_dgm(self.bucket)
 
             ###################################################################
             '''
@@ -1458,10 +1441,8 @@ class volume(BaseTestCase):
                     self.available_servers += servs_out
                     self.cluster.nodes_in_cluster = list(
                         set(self.cluster.nodes_in_cluster) - set(servs_out))
-                    self.get_bucket_dgm(self.bucket)
             else:
                 self.log.info("Volume Test Run Complete")
-                self.get_bucket_dgm(self.bucket)
 
     def SteadyStateVolume(self):
         check_dump_th = threading.Thread(target=self.check_dump)
@@ -2082,11 +2063,9 @@ class volume(BaseTestCase):
                     self.available_servers += servs_out
                     self.cluster.nodes_in_cluster = list(
                         set(self.cluster.nodes_in_cluster) - set(servs_out))
-                    self.get_bucket_dgm(self.bucket)
 
             self.print_stats()
 
-        self.get_bucket_dgm(self.bucket)
         self.log.info("Volume Test Run Complete")
         self.task_manager.abort_all_tasks()
 
