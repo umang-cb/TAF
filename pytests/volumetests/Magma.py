@@ -373,7 +373,7 @@ class volume(BaseTestCase):
         task = self.task.async_load_gen_docs_from_spec(
             self.cluster, self.doc_loading_tm, loader_spec,
             self.sdk_client_pool,
-            batch_size=1000,
+            batch_size=self.batch_size,
             process_concurrency=self.process_concurrency,
             print_ops_rate=True,
             start_task=True,
@@ -539,6 +539,7 @@ class volume(BaseTestCase):
                 shell = RemoteMachineShellConnection(node)
                 shell.kill_erlang()
                 self.sleep(self.sleep_time * 3)
+                shell.disconnect()
             else:
                 self.fail("Invalid error induce option")
 
@@ -644,6 +645,7 @@ class volume(BaseTestCase):
             output = shell.execute_command(
                     "lscpu | grep 'CPU(s)' | head -1 | awk '{print $2}'"
                     )[0][0].split('\n')[0]
+            shell.disconnect()
             self.log.debug("machine: {} - core(s): {}".format(server.ip,
                                                               output))
             for i in range(int(output)):
@@ -816,6 +818,7 @@ class volume(BaseTestCase):
             cbstats = Cbstats(shell)
             target_vbucket = cbstats.vbucket_list(self.bucket_util.buckets[0].
                                                   name)
+            shell.disconnect()
 
             gen_docs = doc_generator(
                 self.key_prefix,
