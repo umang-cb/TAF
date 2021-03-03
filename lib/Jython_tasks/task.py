@@ -59,6 +59,7 @@ class Task(Callable):
         self.log = logger.get("infra")
         self.test_log = logger.get("test")
         self.result = False
+        self.sleep = time.sleep
 
     def __str__(self):
         if self.exception:
@@ -773,7 +774,12 @@ class LoadDocumentsTask(GenericLoadingTask):
                               generator._doc_gen.end,
                               time.time())
         self.generator = generator
+        self.skip_doc_gen_value = False
         self.op_type = op_type
+        if self.op_type in [DocLoading.Bucket.DocOps.DELETE,
+                            DocLoading.Bucket.DocOps.TOUCH,
+                            DocLoading.Bucket.DocOps.READ]:
+            self.skip_doc_gen_value = True
         self.exp = exp
         self.abs_exp = self.exp
         self.random_exp = random_exp
@@ -800,7 +806,7 @@ class LoadDocumentsTask(GenericLoadingTask):
 
     def next(self, override_generator=None):
         doc_gen = override_generator or self.generator
-        key_value = doc_gen.next_batch(self.op_type)
+        key_value = doc_gen.next_batch(self.skip_doc_gen_value)
         if self.random_exp:
             self.exp = random.randint(self.abs_exp / 2, self.abs_exp)
             print "EXPIRY SET TO %s" % self.exp
@@ -904,7 +910,12 @@ class LoadSubDocumentsTask(GenericLoadingTask):
             op_type,
             durability)
         self.generator = generator
+        self.skip_doc_gen_value = False
         self.op_type = op_type
+        if self.op_type in [DocLoading.Bucket.DocOps.DELETE,
+                            DocLoading.Bucket.DocOps.TOUCH,
+                            DocLoading.Bucket.DocOps.READ]:
+            self.skip_doc_gen_value = True
         self.exp = exp
         self.create_path = create_paths
         self.xattr = xattr
@@ -923,7 +934,7 @@ class LoadSubDocumentsTask(GenericLoadingTask):
 
     def next(self, override_generator=None):
         doc_gen = override_generator or self.generator
-        key_value = doc_gen.next_batch(self.op_type)
+        key_value = doc_gen.next_batch(self.skip_doc_gen_value)
         if self.sdk_client_pool is not None:
             self.client = \
                 self.sdk_client_pool.get_client_for_bucket(self.bucket,
@@ -2125,7 +2136,10 @@ class ValidateDocumentsTask(GenericLoadingTask):
             op_type, time.time())
 
         self.generator = generator
+        self.skip_doc_gen_value = False
         self.op_type = op_type
+        if self.op_type in [DocLoading.Bucket.DocOps.DELETE]:
+            self.skip_doc_gen_value = True
         self.exp = exp
         self.flag = flag
         self.suppress_error_table = suppress_error_table
@@ -2153,7 +2167,7 @@ class ValidateDocumentsTask(GenericLoadingTask):
                 self.sdk_client_pool.get_client_for_bucket(self.bucket,
                                                            self.scope,
                                                            self.collection)
-        key_value = dict(doc_gen.next_batch(self.op_type))
+        key_value = dict(doc_gen.next_batch(self.skip_doc_gen_value))
         self.test_log.info(key_value)
         result_map, self.failed_reads = self.batch_read(key_value.keys())
         self.test_log.info(result_map)
@@ -2218,7 +2232,7 @@ class ValidateDocumentsTask(GenericLoadingTask):
                 self.sdk_client_pool.get_client_for_bucket(self.bucket,
                                                            self.scope,
                                                            self.collection)
-        key_value = dict(doc_gen.next_batch(self.op_type))
+        key_value = dict(doc_gen.next_batch(self.skip_doc_gen_value))
         if self.check_replica:
             # change to getFromReplica
             result_map = dict()
@@ -2283,6 +2297,8 @@ class ValidateDocumentsTask(GenericLoadingTask):
                                            % (wrong_values.__len__(),
                                               wrong_values))
                 self.wrong_values.extend(wrong_values)
+        if self.exception:
+            raise(self.exception)
 
     def next(self, override_generator=None):
         doc_gen = override_generator or self.generator
@@ -2387,21 +2403,34 @@ class DocumentsValidatorTask(Task):
                 self.bucket = self.buckets[iterator]
             tasks.extend(self.get_tasks(generator))
             iterator += 1
-        for task in tasks:
-            self.task_manager.add_new_task(task)
-        for task in tasks:
-            self.task_manager.get_task_result(task)
-            if task.exception is not None:
-                exception = task.exception
+        try:
+            for task in tasks:
+                self.task_manager.add_new_task(task)
+            for task in tasks:
+                self.task_manager.get_task_result(task)
 
-            if not self.suppress_error_table:
-                task.failed_item_table.display(
-                    "DocValidator failure for %s:%s:%s"
-                    % (self.bucket.name, self.scope, self.collection))
-        if self.sdk_client_pool is None:
+                if not self.suppress_error_table:
+                    task.failed_item_table.display(
+                        "DocValidator failure for %s:%s:%s"
+                        % (self.bucket.name, self.scope, self.collection))
+        except Exception as e:
+            self.result = False
+            self.log.debug("========= Tasks in loadgen pool=======")
+            self.task_manager.print_tasks_in_pool()
+            self.log.debug("======================================")
+            for task in tasks:
+                self.task_manager.stop_task(task)
+                self.log.debug("Task '%s' complete." % (task.thread_name))
+            self.test_log.error(e)
+            if not self.sdk_client_pool:
+                for client in self.clients:
+                    client.close()
+            self.set_exception(e)
+
+        self.complete_task()
+        if not self.sdk_client_pool:
             for client in self.clients:
                 client.close()
-
         self.complete_task()
         if exception:
             self.set_exception(exception)
@@ -3845,6 +3874,7 @@ class MutateDocsFromSpecTask(Task):
                                                   scope_name, col_name,
                                                   op_data["doc_ttl"])
                 if op_type in DocLoading.Bucket.DOC_OPS:
+                    track_failures = op_data.get("track_failures", self.track_failures)
                     doc_load_task = LoadDocumentsTask(
                         self.cluster, bucket, None, doc_gen,
                         op_type, op_data["doc_ttl"],
@@ -3857,6 +3887,7 @@ class MutateDocsFromSpecTask(Task):
                         time_unit=op_data["sdk_timeout_unit"],
                         skip_read_on_error=op_data["skip_read_on_error"],
                         suppress_error_table=op_data["suppress_error_table"],
+                        track_failures=track_failures,
                         skip_read_success_results=op_data[
                             "skip_read_success_results"])
                 else:
@@ -3886,6 +3917,128 @@ class MutateDocsFromSpecTask(Task):
             load_gen_for_bucket_create_threads.append(bucket_thread)
 
         for bucket_thread in load_gen_for_bucket_create_threads:
+            bucket_thread.join(timeout=180)
+        return tasks
+
+
+class ValidateDocsFromSpecTask(Task):
+    def __init__(self, cluster, task_manager, loader_spec,
+                 sdk_client_pool, check_replica=False,
+                 batch_size=500,
+                 process_concurrency=1,
+                 pause_secs=1):
+        super(ValidateDocsFromSpecTask, self).__init__(
+            "ValidateDocsFromSpecTask_%s" % time.time())
+        self.cluster = cluster
+        self.task_manager = task_manager
+        self.loader_spec = loader_spec
+        self.process_concurrency = process_concurrency
+        self.batch_size = batch_size
+        self.check_replica = check_replica
+        self.pause_secs = pause_secs
+
+        self.result = True
+        self.validate_data_tasks = list()
+        self.validate_data_tasks_lock = Lock()
+        self.sdk_client_pool = sdk_client_pool
+
+    def call(self):
+        self.start_task()
+        self.get_tasks()
+        try:
+            for task in self.validate_data_tasks:
+                self.task_manager.add_new_task(task)
+            for task in self.validate_data_tasks:
+                self.task_manager.get_task_result(task)
+        except Exception as e:
+            self.result = False
+            self.log.debug("========= Tasks in loadgen pool=======")
+            self.task_manager.print_tasks_in_pool()
+            self.log.debug("======================================")
+            for task in self.validate_data_tasks:
+                self.task_manager.stop_task(task)
+                self.log.debug("Task '%s' complete. Loaded %s items"
+                               % (task.thread_name, task.docs_loaded))
+            self.test_log.error(e)
+            self.set_exception(e)
+
+        self.complete_task()
+        return self.result
+
+    def create_tasks_for_bucket(self, bucket, scope_dict):
+        load_gen_for_scopes_create_threads = list()
+        for scope_name, collection_dict in scope_dict.items():
+            scope_thread = threading.Thread(
+                target=self.create_tasks_for_scope,
+                args=[bucket, scope_name, collection_dict["collections"]])
+            scope_thread.start()
+            load_gen_for_scopes_create_threads.append(scope_thread)
+        for scope_thread in load_gen_for_scopes_create_threads:
+            scope_thread.join(120)
+
+    def create_tasks_for_scope(self, bucket, scope_name, collection_dict):
+        load_gen_for_collection_create_threads = list()
+        for c_name, c_data in collection_dict.items():
+            collection_thread = threading.Thread(
+                target=self.create_tasks_for_collections,
+                args=[bucket, scope_name, c_name, c_data])
+            collection_thread.start()
+            load_gen_for_collection_create_threads.append(collection_thread)
+
+        for collection_thread in load_gen_for_collection_create_threads:
+            collection_thread.join(60)
+
+    def create_tasks_for_collections(self, bucket, scope_name,
+                                     col_name, col_meta):
+        for op_type, op_data in col_meta.items():
+            # Create success, fail dict per load_gen task
+            op_data["success"] = dict()
+            op_data["fail"] = dict()
+
+            generators = list()
+            generator = op_data["doc_gen"]
+            gen_start = int(generator.start)
+            gen_end = int(generator.end)
+            gen_range = max(int((generator.end - generator.start)
+                                / self.process_concurrency),
+                            1)
+            for pos in range(gen_start, gen_end, gen_range):
+                partition_gen = copy.deepcopy(generator)
+                partition_gen.start = pos
+                partition_gen.itr = pos
+                partition_gen.end = pos + gen_range
+                if partition_gen.end > generator.end:
+                    partition_gen.end = generator.end
+                batch_gen = BatchedDocumentGenerator(
+                    partition_gen,
+                    self.batch_size)
+                generators.append(batch_gen)
+            for doc_gen in generators:
+                if op_type in DocLoading.Bucket.DOC_OPS:
+                    task = ValidateDocumentsTask(
+                        self.cluster, bucket, None, doc_gen,
+                        op_type, op_data["doc_ttl"],
+                        None, batch_size=self.batch_size,
+                        pause_secs=self.pause_secs, timeout_secs=op_data["sdk_timeout"],
+                        compression=None, check_replica=self.check_replica,
+                        scope=scope_name, collection=col_name,
+                        sdk_client_pool=self.sdk_client_pool,
+                        is_sub_doc=False,
+                        suppress_error_table=op_data["suppress_error_table"])
+                    self.validate_data_tasks.append(task)
+
+    def get_tasks(self):
+        tasks = list()
+        bucket_validation_threads = list()
+
+        for bucket, scope_dict in self.loader_spec.items():
+            bucket_thread = threading.Thread(
+                target=self.create_tasks_for_bucket,
+                args=[bucket, scope_dict["scopes"]])
+            bucket_thread.start()
+            bucket_validation_threads.append(bucket_thread)
+
+        for bucket_thread in bucket_validation_threads:
             bucket_thread.join(timeout=180)
         return tasks
 
@@ -5332,10 +5485,12 @@ class ViewCompactionTask(Task):
 
 
 class CompactBucketTask(Task):
-    def __init__(self, server, bucket):
+    def __init__(self, server, bucket, timeout=300):
         Task.__init__(self, "CompactionTask_%s" % bucket.name)
         self.server = server
         self.bucket = bucket
+        self.progress = 0
+        self.timeout = timeout
         self.rest = RestConnection(server)
         self.retries = 20
         self.statuses = dict()
@@ -5351,38 +5506,56 @@ class CompactBucketTask(Task):
 
         status = BucketHelper(self.server).compact_bucket(self.bucket.name)
         if status is False:
-            self.set_result(False)
-            self.test_log.error("Compact bucket rest call failed")
-        else:
             while self.retries != 0:
-                self.check()
-                if self.result is True:
+                sleep(60, "Wait before next compaction call", log_type="infra")
+                status = BucketHelper(self.server).compact_bucket(self.bucket.name)
+                if status is True:
+                    self.set_result(True)
                     break
+                self.set_result(False)
                 self.retries -= 1
-                sleep(30, "Wait for compaction to complete", log_type="infra")
+        else:
+            self.set_result(True)
 
-            if self.result is False:
-                self.test_log.error("Compaction failed to complete within "
-                                    "%s retries" % self.retries)
+        if self.result is True:
+            stop_time = time.time() + self.timeout
+            while time.time() < stop_time:
+                if self.timeout > 0 and  time.time() > stop_time:
+                    self.set_exception("API to check compaction status timed out in"
+                                       "%s seconds" % self.timeout)
+                    break
+                status, self.progress = \
+                    self.rest.check_compaction_status(self.bucket.name)
+                if self.progress > 0:
+                    self.test_log.debug("Compaction started for %s"
+                                       % self.bucket.name)
+                    break
+                sleep(2, "Wait before next check compaction call", log_type="infra")
+
+            stop_time = time.time() + self.timeout
+            while time.time() < stop_time:
+                if self.timeout > 0 and  time.time() > stop_time:
+                    self.set_exception("Compaction timed out to complete with "
+                                       "%s seconds" % self.timeout)
+                status, self.progress = \
+                    self.rest.check_compaction_status(self.bucket.name)
+
+                if status is True:
+                    self.test_log.debug("%s compaction done: %s%%"
+                                        % (self.bucket.name, self.progress))
+                if status is False:
+                    self.progress = 100
+                    self.test_log.debug("Compaction completed for %s"
+                                       % self.bucket.name)
+                    self.test_log.info("%s compaction done: %s%%"
+                                        % (self.bucket.name, self.progress))
+                    break
+                sleep(5, "Wait before next check compaction call", log_type="infra")
+        else:
+            self.test_log.error("Compaction failed to complete within "
+                                "%s retries" % self.retries)
 
         self.complete_task()
-
-    def check(self):
-        # check bucket compaction status across all nodes
-        nodes = self.rest.get_nodes()
-        current_compaction_count = dict()
-
-        for node in nodes:
-            current_compaction_count[node.ip] = 0
-            shell = RemoteMachineShellConnection(self.server)
-            res = Cbstats(shell).get_kvtimings()
-            shell.disconnect()
-            for i in res[0]:
-                if 'compact' in i:
-                    current_compaction_count[node.ip] += int(i.split(':')[2])
-
-        if cmp(current_compaction_count, self.compaction_count) == 1:
-            self.set_result(True)
 
 
 class MonitorBucketCompaction(Task):
@@ -5612,7 +5785,8 @@ class NodeInitializeTask(Task):
 
 class FailoverTask(Task):
     def __init__(self, servers, to_failover=[], wait_for_pending=0,
-                 graceful=False, use_hostnames=False, allow_unsafe=False):
+                 graceful=False, use_hostnames=False, allow_unsafe=False,
+                 all_at_once=False):
         Task.__init__(self, "failover_task")
         self.servers = servers
         self.to_failover = to_failover
@@ -5620,6 +5794,7 @@ class FailoverTask(Task):
         self.wait_for_pending = wait_for_pending
         self.use_hostnames = use_hostnames
         self.allow_unsafe = allow_unsafe
+        self.all_at_once = all_at_once
 
     def call(self):
         try:
@@ -5638,19 +5813,37 @@ class FailoverTask(Task):
 
     def _failover_nodes(self):
         rest = RestConnection(self.servers[0])
-        # call REST fail_over for the nodes to be failed over
-        for server in self.to_failover:
-            for node in rest.node_statuses():
-                if (
-                        server.hostname if self.use_hostnames else server.ip) == node.ip and int(
-                    server.port) == int(node.port):
-                    self.test_log.debug(
-                        "Failing over {0}:{1} with graceful={2}"
-                            .format(node.ip, node.port, self.graceful))
-                    result = rest.fail_over(node.id, self.graceful,
-                                            self.allow_unsafe)
-                    if not result:
-                        self.set_exception("Node failover failed!!")
+
+        # call REST fail_over for the nodes to be failed over all at once
+        if self.all_at_once:
+            otp_nodes = list()
+            for server in self.to_failover:
+                for node in rest.node_statuses():
+                    if (
+                            server.hostname if self.use_hostnames else server.ip) == node.ip and int(
+                        server.port) == int(node.port):
+                        otp_nodes.append(node.id)
+            self.test_log.debug(
+                "Failing over {0} with graceful={1}"
+                    .format(otp_nodes, self.graceful))
+            result = rest.fail_over(otp_nodes, self.graceful,
+                                    self.allow_unsafe, self.all_at_once)
+            if not result:
+                self.set_exception("Node failover failed!!")
+        else:
+            # call REST fail_over for the nodes to be failed over one by one
+            for server in self.to_failover:
+                for node in rest.node_statuses():
+                    if (
+                            server.hostname if self.use_hostnames else server.ip) == node.ip and int(
+                        server.port) == int(node.port):
+                        self.test_log.debug(
+                            "Failing over {0}:{1} with graceful={2}"
+                                .format(node.ip, node.port, self.graceful))
+                        result = rest.fail_over(node.id, self.graceful,
+                                                self.allow_unsafe)
+                        if not result:
+                            self.set_exception("Node failover failed!!")
         rest.monitorRebalance()
 
 
@@ -5689,19 +5882,27 @@ class BucketFlushTask(Task):
 class CreateDatasetsTask(Task):
     def __init__(self, bucket_util, cbas_util, cbas_name_cardinality=1,
                  kv_name_cardinality=1, remote_datasets=False,
-                 creation_methods=None):
+                 creation_methods=None, ds_per_collection=1,
+                 ds_per_dv=None):
         super(CreateDatasetsTask, self).__init__(
             "CreateDatasetsOnAllCollectionsTask")
         self.bucket_util = bucket_util
         self.cbas_name_cardinality = cbas_name_cardinality
         self.kv_name_cardinality = kv_name_cardinality
         self.remote_datasets = remote_datasets
+        self.ds_per_collection = ds_per_collection if ds_per_collection >= 1 \
+            else 1
         if not creation_methods:
             self.creation_methods = ["cbas_collection", "cbas_dataset",
                                      "enable_cbas_from_kv"]
         else:
             self.creation_methods = creation_methods
+        if self.ds_per_collection > 1:
+            self.creation_methods = list(filter(lambda method: method !=
+                                                 'enable_cbas_from_kv',
+                        self.creation_methods))
         self.cbas_util = cbas_util
+        self.ds_per_dv = ds_per_dv
         if remote_datasets:
             self.remote_link_objs = self.cbas_util.list_all_link_objs(
                 "couchbase")
@@ -5716,13 +5917,15 @@ class CreateDatasetsTask(Task):
                         for collection in \
                                 self.bucket_util.get_active_collections(
                                 bucket, scope.name):
-                            self.init_dataset_creation(bucket, scope,
-                                                       collection)
+                            for _ in range(self.ds_per_collection):
+                                self.init_dataset_creation(bucket, scope,
+                                                           collection)
                 else:
                     scope = self.bucket_util.get_scope_obj(bucket, "_default")
-                    self.init_dataset_creation(bucket, scope,
-                                               self.bucket_util.get_collection_obj(
-                                                   scope, "_default"))
+                    for _ in range(self.ds_per_collection):
+                        self.init_dataset_creation(
+                            bucket, scope, self.bucket_util.get_collection_obj(
+                                scope, "_default"))
             self.set_result(True)
             self.complete_task()
         except Exception as e:
@@ -5732,7 +5935,12 @@ class CreateDatasetsTask(Task):
 
     def init_dataset_creation(self, bucket, scope, collection):
         creation_method = random.choice(self.creation_methods)
-
+        dataverses = list(filter(lambda dv: (self.ds_per_dv is None) or (len(
+            dv.datasets.keys()) < self.ds_per_dv)),
+                         self.cbas_util.dataverses.values())
+        dataverse = None
+        if dataverses:
+            dataverse = random.choice(dataverses)
         if self.remote_datasets:
             link_name = random.choice(self.remote_link_objs).full_name
         else:
@@ -5742,10 +5950,11 @@ class CreateDatasetsTask(Task):
 
         if creation_method == "enable_cbas_from_kv":
             enabled_from_KV = True
-            dataverse = Dataverse(bucket.name + "." + scope.name)
-            self.cbas_util.dataverses[dataverse.name] = dataverse
+            if not dataverse:
+                dataverse = Dataverse(bucket.name + "." + scope.name)
+                self.cbas_util.dataverses[dataverse.name] = dataverse
             name = CBASHelper.format_name(collection.name)
-        else:
+        elif not dataverse:
             enabled_from_KV = False
             if self.cbas_name_cardinality > 1:
                 dataverse = Dataverse(self.cbas_util.generate_name(
@@ -5776,7 +5985,7 @@ class CreateDatasetsTask(Task):
         self.cbas_util.dataverses[dataverse.name] = dataverse
 
     def create_dataset(self, dataset):
-        dataverse_name = dataset.dataverse_name
+        dataverse_name = str(dataset.dataverse_name)
         if dataverse_name == "Default":
             dataverse_name = None
         if dataset.enabled_from_KV:
@@ -5815,3 +6024,31 @@ class CreateDatasetsTask(Task):
                     dataset.name, dataset.get_fully_qualified_kv_entity_name(1),
                     None, False, False, None, dataset.link_name, None, False,
                     None, None, None, 120, 120, analytics_collection)
+
+
+class DropDatasetsTask(Task):
+    def __init__(self, cbas_util, drop_dataverses=True):
+        super(DropDatasetsTask, self).__init__(
+            "DropDatasetsTask")
+        self.cbas_util = cbas_util
+        self.drop_dataverses = drop_dataverses
+
+    def call(self):
+        self.start_task()
+        try:
+            for dv_name, dataverse in self.cbas_util.dataverses.items():
+                for ds_name, dataset in dataverse.datasets.items():
+                    self.cbas_util.drop_dataset(dataset.full_name)
+                    dataverse.datasets.pop(dataset.full_name)
+                for dataset in self.cbas_util.get_datasets():
+                    if dv_name.startswith(CBASHelper.format_name(
+                            dataset.split(".")[0])):
+                        self.cbas_util.drop_dataset(CBASHelper.format_name(
+                            *(dataset.split("."))))
+                if self.drop_dataverses and dv_name != "Default":
+                    self.cbas_util.drop_dataverse(dv_name)
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+

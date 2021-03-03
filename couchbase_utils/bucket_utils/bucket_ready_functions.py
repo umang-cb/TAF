@@ -862,7 +862,8 @@ class CollectionUtils(DocLoaderUtils):
                 "Collection '%s:%s:%s' creation failed: %s"
                 % (bucket, scope_name, collection_name, content))
             raise Exception("create_collection failed")
-
+        content = json.loads(content)
+        BucketHelper(node).wait_for_collections_warmup(bucket,content["uid"])
         bucket.stats.increment_manifest_uid()
         CollectionUtils.create_collection_object(bucket,
                                                  scope_name,
@@ -891,7 +892,8 @@ class CollectionUtils(DocLoaderUtils):
                 "Collection '%s:%s:%s' delete failed: %s"
                 % (bucket, scope_name, collection_name, content))
             raise Exception("delete_collection")
-
+        content = json.loads(content)
+        BucketHelper(node).wait_for_collections_warmup(bucket, content["uid"])
         bucket.stats.increment_manifest_uid()
         CollectionUtils.mark_collection_as_dropped(bucket,
                                                    scope_name,
@@ -1097,7 +1099,8 @@ class ScopeUtils(CollectionUtils):
             ScopeUtils.log.error("Scope '%s:%s' creation failed: %s"
                                  % (bucket, scope_name, content))
             raise Exception("create_scope failed")
-
+        content = json.loads(content)
+        BucketHelper(node).wait_for_collections_warmup(bucket, content["uid"])
         bucket.stats.increment_manifest_uid()
         ScopeUtils.create_scope_object(bucket, scope_spec)
 
@@ -1120,7 +1123,8 @@ class ScopeUtils(CollectionUtils):
             ScopeUtils.log.error("Scope '%s:%s' deletion failed: %s"
                                  % (bucket, scope_name, content))
             raise Exception("delete_scope failed")
-
+        content = json.loads(content)
+        BucketHelper(node).wait_for_collections_warmup(bucket, content["uid"])
         bucket.stats.increment_manifest_uid()
         ScopeUtils.mark_scope_as_dropped(bucket, scope_name)
 
@@ -1230,9 +1234,6 @@ class BucketUtils(ScopeUtils):
                    + spl_chars
         if invalid_name:
             char_set += invalid_chars
-
-        # TODO: Remove once MB-43994 is fixed
-        max_length = 30
 
         rand_name = ""
         now = datetime.datetime.now()
@@ -1587,7 +1588,8 @@ class BucketUtils(ScopeUtils):
             flush_enabled=Bucket.FlushBucket.DISABLED,
             bucket_durability=BucketDurability[Bucket.DurabilityLevel.NONE],
             purge_interval=1,
-            autoCompactionDefined="false"):
+            autoCompactionDefined="false",
+            fragmentation_percentage=50):
         node_info = RestConnection(self.cluster.master).get_nodes_self()
         if ram_quota:
             ram_quota_mb = ram_quota
@@ -1613,7 +1615,8 @@ class BucketUtils(ScopeUtils):
                                  Bucket.flushEnabled: flush_enabled,
                                  Bucket.durabilityMinLevel: bucket_durability,
                                  Bucket.purge_interval: purge_interval,
-                                 Bucket.autoCompactionDefined: autoCompactionDefined
+                                 Bucket.autoCompactionDefined: autoCompactionDefined,
+                                 Bucket.fragmentationPercentage: fragmentation_percentage
                                  })
         self.create_bucket(default_bucket, wait_for_warmup)
         if self.enable_time_sync:
@@ -1916,7 +1919,10 @@ class BucketUtils(ScopeUtils):
             compression_mode=Bucket.CompressionMode.ACTIVE,
             bucket_durability=BucketDurability[Bucket.DurabilityLevel.NONE],
             ram_quota=None,
-            bucket_name=None):
+            bucket_name=None,
+            purge_interval=1,
+            autoCompactionDefined="false",
+            fragmentationPercentage=50):
         success = True
         rest = RestConnection(server)
         info = rest.get_nodes_self()
@@ -1951,7 +1957,10 @@ class BucketUtils(ScopeUtils):
                         Bucket.maxTTL: maxttl,
                         Bucket.storageBackend: key,
                         Bucket.compressionMode: compression_mode,
-                        Bucket.durabilityMinLevel: bucket_durability})
+                        Bucket.durabilityMinLevel: bucket_durability,
+                        Bucket.purge_interval: purge_interval,
+                        Bucket.autoCompactionDefined: autoCompactionDefined,
+                        Bucket.fragmentationPercentage: fragmentationPercentage})
                     tasks[bucket] = self.async_create_bucket(bucket)
                     count += 1
 

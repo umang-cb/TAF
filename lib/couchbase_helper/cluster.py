@@ -29,7 +29,8 @@ class ServerTasks(object):
         self.log.debug("Initiating ServerTasks")
 
     def async_failover(self, servers=[], failover_nodes=[], graceful=False,
-                       use_hostnames=False, wait_for_pending=0, allow_unsafe=False):
+                       use_hostnames=False, wait_for_pending=0, allow_unsafe=False,
+                       all_at_once=False):
         """
         Asynchronously failover a set of nodes
 
@@ -37,6 +38,8 @@ class ServerTasks(object):
           servers - servers used for connection. (TestInputServer)
           failover_nodes - Servers that will be failed over (TestInputServer)
           graceful = True/False. True - graceful, False - hard. (Boolean)
+          all_at_once = whether to failover all of failover_nodes at once in case of
+                        multiple failover nodes
 
         Returns:
           FailOverTask - A task future that is a handle to the scheduled task
@@ -46,7 +49,8 @@ class ServerTasks(object):
                                           graceful=graceful,
                                           use_hostnames=use_hostnames,
                                           wait_for_pending=wait_for_pending,
-                                          allow_unsafe=allow_unsafe)
+                                          allow_unsafe=allow_unsafe,
+                                          all_at_once=all_at_once)
         self.jython_task_manager.schedule(_task)
         return _task
 
@@ -383,6 +387,23 @@ class ServerTasks(object):
             bucket_stat = rest.get_bucket_stats_for_node(bucket.name,
                                                          cluster.master)
         return num_items
+
+    def async_validate_docs_using_spec(self, cluster, task_manager, loader_spec,
+                                       check_replica,
+                                       sdk_client_pool,
+                                       batch_size=200,
+                                       process_concurrency=1,
+                                       pause_secs=1):
+        task_manager = task_manager or self.jython_task_manager
+        _task = jython_tasks.ValidateDocsFromSpecTask(
+            cluster, task_manager, loader_spec,
+            sdk_client_pool=sdk_client_pool,
+            check_replica=check_replica,
+            batch_size=batch_size,
+            process_concurrency=process_concurrency,
+            pause_secs=pause_secs)
+        task_manager.add_new_task(_task)
+        return _task
 
     def async_validate_docs(self, cluster, bucket, generator, opt_type, exp=0,
                             flag=0, only_store_hash=True, batch_size=1,
@@ -886,18 +907,22 @@ class ServerTasks(object):
         return self.jython_task_manager.get_task_result(_task)
 
     def failover(self, servers=[], failover_nodes=[], graceful=False,
-                 use_hostnames=False, wait_for_pending=0, allow_unsafe=False):
+                 use_hostnames=False, wait_for_pending=0, allow_unsafe=False,
+                 all_at_once=False):
         """Synchronously flushes a bucket
 
         Parameters:
             servers - node used for connection (TestInputServer)
             failover_nodes - Servers to be failed over (TestInputServer)
             bucket - The name of the bucket to be flushed. (String)
+            all_at_once = whether to failover all of failover_nodes at once in case of
+                        multiple failover nodes
 
         Returns:
             boolean - Whether or not the bucket was flushed."""
         _task = self.async_failover(servers, failover_nodes, graceful,
-                                    use_hostnames, wait_for_pending, allow_unsafe)
+                                    use_hostnames, wait_for_pending, allow_unsafe,
+                                    all_at_once=all_at_once)
         self.jython_task_manager.get_task_result(_task)
         return _task.result
 

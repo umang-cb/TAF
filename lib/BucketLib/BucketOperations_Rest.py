@@ -321,7 +321,9 @@ class BucketHelper(RestConnection):
             init_params["viewFragmentationThreshold%5Bpercentage%5D"] = 50
             init_params["indexCompactionMode"] = "circular"
             init_params["purgeInterval"] = 3
-
+        if bucket_params.get("fragmentationPercentage") and \
+           bucket_params.get('storageBackend') == Bucket.StorageBackend.magma:
+            init_params["fragmentationPercentage"] = bucket_params.get("fragmentationPercentage")
         if init_params[Bucket.priority] == "high":
             init_params[Bucket.threadsNumber] = Bucket.Priority.HIGH
         init_params.pop(Bucket.priority)
@@ -704,10 +706,10 @@ class BucketHelper(RestConnection):
                                                            session=session)
         return status, content
 
-    def wait_for_collections_warmup(self, bucket, collection_id, session=None):
+    def wait_for_collections_warmup(self, bucket, uid, session=None):
         api = self.baseUrl \
               + "pools/default/buckets/%s/scopes/@ensureManifest/%s" \
-              % (bucket.name, collection_id)
+              % (bucket.name, uid)
         headers = self._create_headers()
         if session is None:
             status, content, _ = self._http_request(api,

@@ -28,6 +28,15 @@ class UpgradeTests(UpgradeBase):
     def tearDown(self):
         super(UpgradeTests, self).tearDown()
 
+    def __wait_for_persistence_and_validate(self):
+        self.bucket_util._wait_for_stats_all_buckets(
+            cbstat_cmd="checkpoint", stat_name="num_items_for_persistence",
+            timeout=300)
+        self.bucket_util._wait_for_stats_all_buckets(
+            cbstat_cmd="all", stat_name="ep_queue_size",
+            timeout=60)
+        self.bucket_util.validate_docs_per_collections_all_buckets()
+
     def __trigger_cbcollect(self, log_path):
         self.log.info("Triggering cb_collect_info")
         rest = RestConnection(self.cluster.master)
@@ -45,8 +54,19 @@ class UpgradeTests(UpgradeBase):
         return status
 
     def __play_with_collection(self):
+        # MB-44092 - Collection load not working with pre-existing connections
+        DocLoaderUtils.sdk_client_pool = SDKClientPool()
+        self.log.info("Creating required SDK clients for client_pool")
+        clients_per_bucket = \
+            int(self.thread_to_use / len(self.bucket_util.buckets))
+        for bucket in self.bucket_util.buckets:
+            DocLoaderUtils.sdk_client_pool.create_clients(
+                bucket, [self.cluster.master], clients_per_bucket,
+                compression_settings=self.sdk_compression)
+
         # Client based scope/collection crud tests
-        client = self.sdk_client_pool.get_client_for_bucket(self.bucket)
+        client = \
+            DocLoaderUtils.sdk_client_pool.get_client_for_bucket(self.bucket)
         scope_name = self.bucket_util.get_random_name(
             max_length=CbServer.max_scope_name_len)
         collection_name = self.bucket_util.get_random_name(
@@ -62,14 +82,8 @@ class UpgradeTests(UpgradeBase):
         client.drop_collection(scope_name, collection_name)
         # Drop created scope using SDK client
         client.drop_scope(scope_name)
-
-        # MB-44092 - Collection load not working with pre-existing connections
-        DocLoaderUtils.sdk_client_pool = SDKClientPool()
-        self.log.info("Creating required SDK clients for client_pool")
-        for bucket in self.bucket_util.buckets:
-            DocLoaderUtils.sdk_client_pool.create_clients(
-                bucket, [self.cluster.master], 1,
-                compression_settings=self.sdk_compression)
+        # Release the acquired client
+        DocLoaderUtils.sdk_client_pool.release_client(client)
 
         # Create scopes/collections phase
         collection_load_spec = \
@@ -94,11 +108,10 @@ class UpgradeTests(UpgradeBase):
         if collection_task.result is False:
             self.log_failure("Collection task failed")
             return
-        self.bucket_util._wait_for_stats_all_buckets()
-        self.bucket_util._wait_for_stats_all_buckets(cbstat_cmd="all",
-                                                     stat_name="ep_queue_size",
-                                                     timeout=60)
-        self.bucket_util.validate_docs_per_collections_all_buckets()
+
+        # Perform collection/doc_count validation
+        if not self.upgrade_with_data_load:
+            self.__wait_for_persistence_and_validate()
 
         # Drop and recreate scope/collections
         collection_load_spec = \
@@ -118,14 +131,12 @@ class UpgradeTests(UpgradeBase):
             self.log_failure("Drop scope/collection failed")
             return
 
+        # Perform collection/doc_count validation
+        if not self.upgrade_with_data_load:
+            self.__wait_for_persistence_and_validate()
+
         # MB-44092 - Close client_pool after collection ops
         DocLoaderUtils.sdk_client_pool.shutdown()
-
-        self.bucket_util._wait_for_stats_all_buckets()
-        self.bucket_util._wait_for_stats_all_buckets(cbstat_cmd="all",
-                                                     stat_name="ep_queue_size",
-                                                     timeout=60)
-        self.bucket_util.validate_docs_per_collections_all_buckets()
 
     def test_upgrade(self):
         create_batch_size = 10000
@@ -235,10 +246,7 @@ class UpgradeTests(UpgradeBase):
             if self.test_failure is not None:
                 break
 
-        # Validate default collection stats before collection ops
-        self.bucket_util._wait_for_stats_all_buckets(cbstat_cmd="all",
-                                                     stat_name="ep_queue_size",
-                                                     timeout=60)
+        # Validate default num_items before collection tests
         self.bucket_util.validate_docs_per_collections_all_buckets()
 
         # Play with collection if upgrade was successful
@@ -250,6 +258,8 @@ class UpgradeTests(UpgradeBase):
             update_task.end_task()
             self.task_manager.get_task_result(update_task)
 
+        # Perform final collection/doc_count validation
+        self.__wait_for_persistence_and_validate()
         self.validate_test_failure()
 
     def test_bucket_durability_upgrade(self):

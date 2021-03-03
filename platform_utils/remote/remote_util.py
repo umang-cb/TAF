@@ -575,6 +575,9 @@ class RemoteMachineShellConnection:
 
     def kill_indexer(self):
         return self.kill_process("indexer", "indexer", signum=9)
+
+    def kill_cbas(self):
+        return self.kill_process("cbas", "cbas", signum=9)
     
     def start_prometheus(self):
         return self.kill_process("prometheus", "prometheus", signum=18)
@@ -3436,10 +3439,11 @@ class RemoteMachineShellConnection:
 
                     os_distro_dict = {'ubuntu': 'Ubuntu', 'debian': 'Ubuntu', 'mint': 'Ubuntu',
                                       'amazon linux ami': 'CentOS', 'centos': 'CentOS', 'opensuse': 'openSUSE',
-                                      'red': 'Red Hat', 'suse': 'SUSE', 'oracle': 'Oracle Linux'}
+                                      'red': 'Red Hat', 'suse': 'SUSE', 'oracle': 'Oracle Linux',
+                                      'openshift' : 'CentOS'}
                     os_shortname_dict = {'ubuntu': 'ubuntu', 'debian': 'debian', 'mint': 'ubuntu',
                                          'amazon linux ami': 'amzn2', 'centos': 'centos', 'opensuse': 'suse',
-                                         'red': 'rhel', 'suse': 'suse', 'oracle': 'oel'}
+                                         'red': 'rhel', 'suse': 'suse', 'oracle': 'oel', 'openshift' : 'centos'}
                     #self.log.debug("os_pretty_name:" + os_pretty_name)
                     if os_pretty_name:
                         os_name = os_pretty_name.split(' ')[0].lower()
@@ -3642,7 +3646,7 @@ class RemoteMachineShellConnection:
             ip_type = "inet6 \K[0-9a-zA-Z:]"
         if info.type.lower() != 'windows':
             cmd = "ifconfig | grep -Po '{0}+'".format(ip_type)
-            o, r = self.execute_command_raw(cmd)
+            o, r = self.execute_command_raw_jsch(cmd)
         if ipv6_server:
             for x in range(len(o)):
                 o[x] = "[{0}]".format(o[x])
