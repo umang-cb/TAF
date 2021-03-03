@@ -72,13 +72,13 @@ class CBASUDF(CBASBaseTest):
         else:
             parameters = []
             for i in range(0, no_of_parameters):
-                parameters.append(CBASHelper.format_name(self.cbas_util_v2.generate_name()))
+                parameters.append("param_{0}".format(i))
 
         dataverse = random.choice(self.cbas_util_v2.dataverses.values())
         dependent_entity = list()
         body_template = {
             "expression": "",
-            "dataset": "select count(*) from {0}",
+            "dataset": "select value count(*) from {0}",
             "udf": "{0}({1})"
         }
         body = ""
@@ -95,8 +95,12 @@ class CBASUDF(CBASBaseTest):
         def get_dependent_entity_in_a_dv(list_of_objects, dataverse):
             entity = random.choice(list_of_objects)
             if dependent_entity_dv == "same":
-                if entity.dataverse_name != dataverse.name:
-                    dataverse = entity.dataverse_name
+                while entity.dataverse_name != dataverse.name:
+                    if len(list_of_objects) == 1:
+                        dataverse = random.choice(
+                            self.cbas_util_v2.dataverses.values())
+                    else:
+                        entity = random.choice(list_of_objects)
             elif dependent_entity_dv == "diff":
                 while entity.dataverse_name == dataverse.name:
                     if len(list_of_objects) == 1:
@@ -106,25 +110,23 @@ class CBASUDF(CBASBaseTest):
                         entity = random.choice(list_of_objects)
             return entity
 
-        if body_type == "dataset":
-            dependent_entity.append(get_dependent_entity_in_a_dv(
-                self.cbas_util_v2.list_all_dataset_objs(), dataverse
-            ))
+        if body_type == "dataset" or body_type == "synonym":
+            
+            if body_type == "dataset":
+                entity_list = self.cbas_util_v2.list_all_dataset_objs()
+            elif body_type == "synonym":
+                entity_list = self.cbas_util_v2.list_all_synonym_objs()
+            
             if use_full_name:
-                body += body_template[body_type].format(
+                dependent_entity.append(get_dependent_entity_in_a_dv(
+                    entity_list, dataverse))
+                body += body_template["dataset"].format(
                     dependent_entity[0].full_name)
             else:
-                body += body_template[body_type].format(
-                    dependent_entity[0].name)
-        elif body_type == "synonym":
-            dependent_entity.append(get_dependent_entity_in_a_dv(
-                self.cbas_util_v2.list_all_synonym_objs(), dataverse
-            ))
-            if use_full_name:
-                body += body_template[body_type].format(
-                    dependent_entity[0].full_name)
-            else:
-                body += body_template[body_type].format(
+                dataverse = self.cbas_util_v2.get_dataverse_obj("Default") 
+                dependent_entity.append(get_dependent_entity_in_a_dv(
+                    entity_list, dataverse))
+                body += body_template["dataset"].format(
                     dependent_entity[0].name)
         elif body_type == "udf":
             dependent_entity.append(get_dependent_entity_in_a_dv(
@@ -139,11 +141,13 @@ class CBASUDF(CBASBaseTest):
                     dependent_entity[0].name,
                     ",".join(dependent_entity[0].parameters))
             parameters = dependent_entity[0].parameters
-
-        return CBAS_UDF(
+        
+        obj = CBAS_UDF(
             name=self.cbas_util_v2.generate_name(),
             dataverse_name=dataverse.name, parameters=parameters,
             body=body, referenced_entities=dependent_entity)
+        dataverse.udfs[obj.full_name] = obj
+        return obj
 
     def test_create_analytics_udf(self):
         self.log.info("Test started")
@@ -176,9 +180,9 @@ class CBASUDF(CBASBaseTest):
             elif self.input.param('custom_params') == "mix_param_2":
                 udf_obj.parameters = ["...", "a", "b"]
             elif self.input.param('custom_params') == "int_param":
-                udf_obj.parameters = [1, 2]
+                udf_obj.parameters = ["1", "2"]
             elif self.input.param('custom_params') == "bool_param":
-                udf_obj.parameters = [True, False]
+                udf_obj.parameters = ["True", "False"]
 
         if not self.cbas_util_v2.create_udf(
                 name=udf_obj.name, dataverse=udf_obj.dataverse_name,
@@ -210,7 +214,15 @@ class CBASUDF(CBASBaseTest):
 
             execute_params = [i for i in range(1, num_execute_params + 1)]
             if not execute_params:
-                expected_result = 1
+                if udf_obj.dataset_dependencies:
+                    expected_result = 0
+                    for dependency in udf_obj.dataset_dependencies:
+                        obj = self.cbas_util_v2.get_dataset_obj(
+                            CBASHelper.format_name(dependency[1]), 
+                            CBASHelper.format_name(dependency[0]))
+                        expected_result += obj.num_of_items
+                else:
+                    expected_result = 1
             else:
                 expected_result=sum(execute_params)
             if not self.cbas_util_v2.verify_function_execution_result(
@@ -252,9 +264,11 @@ class CBASUDF(CBASBaseTest):
 
         if self.input.param('test_udf_name', "diff") == "same":
             test_udf_obj.name = udf_objs[0].name
+            test_udf_obj.reset_full_name()
         if self.input.param('test_udf_dv', "diff") == "same":
             test_udf_obj.dataverse_name = udf_objs[0].dataverse_name
-        elif self.input.param('test_udf_param_name', "diff") == "same":
+            test_udf_obj.reset_full_name()
+        if self.input.param('test_udf_param_name', "diff") == "same":
             test_udf_obj.parameters = udf_objs[0].parameters
 
         if not self.cbas_util_v2.create_udf(
@@ -265,7 +279,8 @@ class CBASUDF(CBASBaseTest):
                 if_not_exists=self.input.param('if_not_exists', False),
                 query_context=False, use_statement=False,
                 validate_error_msg=self.input.param('validate_error', False),
-                expected_error=self.input.param('expected_error', None),
+                expected_error=self.input.param('expected_error', "").format(
+                    CBASHelper.unformat_name(test_udf_obj.full_name)),
                 timeout=300, analytics_timeout=300):
             self.fail("Error while creating Analytics UDF")
 
@@ -340,7 +355,8 @@ class CBASUDF(CBASBaseTest):
             else:
                 udf_obj.parameters = []
                 for i in range(0, self.input.param('change_params', None)):
-                    udf_obj.parameters.append(self.cbas_util_v2.generate_name())
+                    udf_obj.parameters.append(
+                        CBASHelper.format_name(self.cbas_util_v2.generate_name()))
 
         if not self.cbas_util_v2.drop_udf(
                 name=udf_obj.name, dataverse=udf_obj.dataverse_name,
@@ -380,17 +396,19 @@ class CBASUDF(CBASBaseTest):
                 validate_error_msg=False, expected_error=None,
                 timeout=300, analytics_timeout=300):
             self.fail("Error while creating Analytics UDF")
-
+            
         if not self.cbas_util_v2.create_dataset(
                 dataset_name=self.cbas_util_v2.generate_name(),
-                kv_entity=self.cbas_util_v2.get_kv_entity(
-                    bucket_util=self.bucket_util, bucket_cardinality=2),
+                kv_entity=(
+                    self.cbas_util_v2.list_all_dataset_objs()[0]
+                    ).full_kv_entity_name,
                 dataverse_name=udf_obj.dataverse_name,
                 where_clause="age > {0}({1})".format(
                     udf_obj.full_name, ",".join(udf_obj.parameters)),
                 validate_error_msg=True,
                 expected_error="Illegal use of user-defined function {"
-                               "0}".format(udf_obj.full_name),
+                               "0}".format(
+                                   CBASHelper.format_name(udf_obj.full_name)),
                 timeout=300, analytics_timeout=300,
                 analytics_collection=False):
             self.fail("Dataset creation was successfull while using user "
@@ -412,11 +430,13 @@ class CBASUDF(CBASBaseTest):
                 validate_error_msg=False, expected_error=None,
                 timeout=300, analytics_timeout=300):
             self.fail("Error while creating Analytics UDF")
-
+        
+        dataset_name=CBASHelper.format_name(*udf_obj.dataset_dependencies[0])
         if not self.cbas_util_v2.drop_dataset(
-                dataset_name=udf_obj.dataset_dependencies[0].full_name,
+                dataset_name=dataset_name,
                 validate_error_msg=True,
-                expected_error=None, expected_error_code=None,
+                expected_error="Cannot drop dataset", 
+                expected_error_code=24142,
                 timeout=300, analytics_timeout=300):
             self.fail("Successfully dropped dataset being used by a UDF")
         self.log.info("Test Finished")
