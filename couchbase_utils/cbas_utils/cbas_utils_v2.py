@@ -4306,8 +4306,6 @@ class KillProcessesInLoopTask(Task):
 class CBASRebalanceUtil(object):
     available_servers = list()
     exclude_nodes = list()
-    query_interval = 3
-    no_of_parallel_queries = 1
 
     def __init__(self, cluster, cluster_util, bucket_util, task, rest,
                  vbucket_check=True, cbas_util=None):
