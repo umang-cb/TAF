@@ -419,7 +419,8 @@ class Dataverse_Util(BaseUtil):
                        expected_error_code=None, if_exists=False,
                        analytics_scope=False, timeout=120,
                        analytics_timeout=120,
-                       delete_dataverse_obj=True):
+                       delete_dataverse_obj=True,
+                       disconnect_local_link=False):
         """
         Drops the dataverse.
         :param dataverse_name: str, Name of the dataverse which has to be dropped.
@@ -436,6 +437,13 @@ class Dataverse_Util(BaseUtil):
         :param analytics_timeout int, analytics query timeout
         :param delete_dataverse_obj bool, deletes dropped dataverse's object from dataverse list
         """
+        if disconnect_local_link:
+            link_cmd = "disconnect link {0}.Local".format(dataverse_name)
+            status, metrics, errors, results, _ = self.execute_statement_on_cbas_util(
+                link_cmd, username=username, password=password, timeout=timeout,
+                analytics_timeout=analytics_timeout)
+            if status != "success":
+                return False
 
         if analytics_scope:
             cmd = "drop analytics scope %s" % dataverse_name

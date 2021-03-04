@@ -268,6 +268,10 @@ class CBASUDF(CBASBaseTest):
         if self.input.param('test_udf_dv', "diff") == "same":
             test_udf_obj.dataverse_name = udf_objs[0].dataverse_name
             test_udf_obj.reset_full_name()
+        else:
+            while test_udf_obj.dataverse_name == udf_objs[0].dataverse_name:
+                test_udf_obj.dataverse_name = random.choice(
+                    self.cbas_util_v2.dataverses.values())
         if self.input.param('test_udf_param_name', "diff") == "same":
             test_udf_obj.parameters = udf_objs[0].parameters
 
@@ -459,9 +463,11 @@ class CBASUDF(CBASBaseTest):
             self.fail("Error while creating Analytics UDF")
 
         if not self.cbas_util_v2.drop_dataverse(
-                dataverse_name=udf_obj.dataverse_name,
+                dataverse_name=CBASHelper.format_name(
+                    udf_obj.dataset_dependencies[0][0]),
                 validate_error_msg=self.input.param('validate_error', False),
                 expected_error=self.input.param('expected_error', None),
-                timeout=300, analytics_timeout=300, delete_dataverse_obj=True):
+                timeout=300, analytics_timeout=300, delete_dataverse_obj=True,
+                disconnect_local_link=True):
             self.fail("Successfully dropped dataverse being used by a UDF")
         self.log.info("Test Finished")
