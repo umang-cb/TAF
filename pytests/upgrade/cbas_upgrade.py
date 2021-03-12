@@ -408,3 +408,20 @@ class UpgradeTests(UpgradeBase):
             node_to_upgrade = self.fetch_node_to_upgrade()
         if not all(self.post_upgrade_validation().values()):
             self.fail("Post upgrade scenarios failed")
+    
+    def test_upgrade_with_failover(self):
+        self.log.info("Upgrading cluster nodes to target version")
+        node_to_upgrade = self.fetch_node_to_upgrade()
+        while node_to_upgrade is not None:
+            self.log.info("Selected node for upgrade: %s"
+                          % node_to_upgrade.ip)
+            if "cbas" in node_to_upgrade.services:
+                self.upgrade_function["failover_full_recovery"](
+                    node_to_upgrade, self.upgrade_version)
+            else:
+                self.upgrade_function[self.upgrade_type](
+                    node_to_upgrade, self.upgrade_version)
+            self.cluster_util.print_cluster_stats()
+            node_to_upgrade = self.fetch_node_to_upgrade()
+        if not all(self.post_upgrade_validation().values()):
+            self.fail("Post upgrade scenarios failed")
