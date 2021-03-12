@@ -90,8 +90,9 @@ class UpgradeBase(BaseTestCase):
             node_service = None
             if self.services_init and len(self.services_init) > index:
                 node_service = self.services_init[index+1].split(',')
-            master_rest.add_node(remoteIp=server.ip,
-                                 services=node_service)
+            master_rest.add_node(
+                user=server.rest_username, password=server.rest_password,
+                remoteIp=server.ip, services=node_service)
 
         self.task.rebalance(self.cluster.servers[0:self.nodes_init], [], [])
         self.cluster.nodes_in_cluster.extend(
@@ -425,7 +426,8 @@ class UpgradeBase(BaseTestCase):
             self.cluster_util.get_nodes(self.cluster.master),
             to_add=[self.spare_node],
             to_remove=[node_to_upgrade],
-            check_vbucket_shuffling=False)
+            check_vbucket_shuffling=False,
+            services=[",".join(services_on_target_node)])
         if not rebalance_passed:
             self.log_failure("Swap rebalance failed during upgrade of {0}"
                              .format(node_to_upgrade))
@@ -501,7 +503,8 @@ class UpgradeBase(BaseTestCase):
         self.cluster_util.print_cluster_stats()
 
         # Update master node
-        self.cluster.master = self.spare_node
+        if "kv" in services_on_target_node:
+            self.cluster.master = self.spare_node
 
         # Update spare node to rebalanced_out node
         self.spare_node = node_to_upgrade
@@ -550,7 +553,8 @@ class UpgradeBase(BaseTestCase):
             return
 
         # Update master node
-        self.cluster.master = self.spare_node
+        if "kv" in services_on_target_node: 
+            self.cluster.master = self.spare_node
 
         # Update spare node to rebalanced_out node
         self.spare_node = node_to_upgrade

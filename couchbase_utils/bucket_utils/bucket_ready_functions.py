@@ -1786,7 +1786,7 @@ class BucketUtils(ScopeUtils):
             self.task_manager.get_task_result(task)
         return task
 
-    def create_buckets_using_json_data(self, buckets_spec, async_create=True):
+    def create_buckets_using_json_data(self, buckets_spec, async_create=True, ignore_existing_buckets=False):
         self.log.info("Creating required buckets from template")
         rest_conn = RestConnection(self.cluster.master)
         buckets_spec = BucketUtils.expand_buckets_spec(rest_conn,
@@ -1806,21 +1806,24 @@ class BucketUtils(ScopeUtils):
                 self.buckets.append(task.bucket_obj)
 
         for bucket in self.buckets:
-            for scope_name, scope_spec \
-                    in buckets_spec[bucket.name]["scopes"].items():
-                if type(scope_spec) is not dict:
-                    continue
-
-                if scope_name != CbServer.default_scope:
-                    self.create_scope_object(bucket, scope_spec)
-
-                for c_name, c_spec in scope_spec["collections"].items():
-                    if type(c_spec) is not dict:
+            if ignore_existing_buckets and (bucket.name not in buckets_spec):
+                continue
+            else:
+                for scope_name, scope_spec \
+                        in buckets_spec[bucket.name]["scopes"].items():
+                    if type(scope_spec) is not dict:
                         continue
-                    c_spec["name"] = c_name
-                    self.create_collection_object(bucket,
-                                                  scope_name,
-                                                  c_spec)
+    
+                    if scope_name != CbServer.default_scope:
+                        self.create_scope_object(bucket, scope_spec)
+    
+                    for c_name, c_spec in scope_spec["collections"].items():
+                        if type(c_spec) is not dict:
+                            continue
+                        c_spec["name"] = c_name
+                        self.create_collection_object(bucket,
+                                                      scope_name,
+                                                      c_spec)
 
     # Support functions with bucket object
     @staticmethod
