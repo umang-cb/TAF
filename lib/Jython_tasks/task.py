@@ -3,29 +3,38 @@ Created on Sep 14, 2017
 
 @author: riteshagarwal
 """
-import json
-import threading
-import zlib
 import copy
+import json
 import json as Json
 import os
 import random
 import socket
+import threading
 import time
+from copy import deepcopy
+import zlib
 from httplib import IncompleteRead
 
+import com.couchbase.test.transactions.SimpleTransaction as Transaction
 from _threading import Lock
+from com.couchbase.client.java.json import JsonObject
+from java.lang import Thread
+from java.util.concurrent import Callable
+from reactor.util.function import Tuples
 
 from BucketLib.BucketOperations import BucketHelper
 from BucketLib.MemcachedOperations import MemcachedHelper
 from BucketLib.bucket import Bucket
-from CbasLib.cbas_entity import Dataverse, CBAS_Collection, Dataset
-from cb_tools.cbstats import Cbstats
 from Cb_constants import constants, CbServer, DocLoading
+from CbasLib.CBASOperations import CBASHelper
+from CbasLib.cbas_entity import Dataverse, CBAS_Collection, Dataset, Synonym, \
+    CBAS_Index, CBAS_UDF
+from Jython_tasks.task_manager import TaskManager
+from cb_tools.cbstats import Cbstats
 from common_lib import sleep
 from couchbase_helper.document import DesignDocument
 from couchbase_helper.documentgenerator import BatchedDocumentGenerator, \
-    doc_generator, SubdocDocumentGenerator
+    SubdocDocumentGenerator
 from global_vars import logger
 from membase.api.exception import \
     N1QLQueryException, DropIndexException, CreateIndexException, \
@@ -35,17 +44,10 @@ from membase.api.exception import \
     CompactViewFailed, SetViewInfoNotFound, FailoverFailedException, \
     BucketFlushFailed
 from membase.api.rest_client import RestConnection
-from java.util.concurrent import Callable
-from java.lang import Thread
 from remote.remote_util import RemoteUtilHelper, RemoteMachineShellConnection
-import com.couchbase.test.transactions.SimpleTransaction as Transaction
-from Jython_tasks.task_manager import TaskManager
 from sdk_exceptions import SDKException
 from table_view import TableView, plot_graph
-from reactor.util.function import Tuples
-from com.couchbase.client.java.json import JsonObject
 from testconstants import INDEX_QUOTA, FTS_QUOTA, CBAS_QUOTA, MIN_KV_QUOTA
-from CbasLib.CBASOperations import CBASHelper
 
 
 class Task(Callable):
@@ -912,10 +914,6 @@ class LoadSubDocumentsTask(GenericLoadingTask):
         self.generator = generator
         self.skip_doc_gen_value = False
         self.op_type = op_type
-        if self.op_type in [DocLoading.Bucket.DocOps.DELETE,
-                            DocLoading.Bucket.DocOps.TOUCH,
-                            DocLoading.Bucket.DocOps.READ]:
-            self.skip_doc_gen_value = True
         self.exp = exp
         self.create_path = create_paths
         self.xattr = xattr
@@ -1962,8 +1960,8 @@ class ContinuousDocOpsTask(Task):
 
 
 class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
-    def __init__(self, cluster, task_manager, bucket, clients, key, exp,
-                 doc_index=0, batch_size=50,
+    def __init__(self, cluster, task_manager, bucket, clients, doc_gen, exp,
+                 batch_size=50,
                  persist_to=0, replicate_to=0,
                  durability="",
                  timeout_secs=5,
@@ -1973,13 +1971,6 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
                  scope=CbServer.default_scope,
                  collection=CbServer.default_collection,
                  task_identifier="",
-                 doc_key_size=8,
-                 doc_size=256,
-                 randomize_doc_size=False,
-                 randomize_value=False,
-                 randomize=False,
-                 mix_key_size=False,
-                 deep_copy=False,
                  sdk_client_pool=None):
         super(LoadDocumentsForDgmTask, self).__init__(
             self, cluster, task_manager, bucket, clients, None,
@@ -1989,6 +1980,7 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
 
         self.cluster = cluster
         self.exp = exp
+        self.doc_gen = doc_gen
         self.persist_to = persist_to
         self.replicate_to = replicate_to
         self.durability = durability
@@ -2002,18 +1994,10 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
         self.print_ops_rate = print_ops_rate
         self.active_resident_threshold = active_resident_threshold
         self.dgm_batch = dgm_batch
-        self.key = key
-        self.key_size = doc_key_size
-        self.doc_size = doc_size
-        self.randomize_doc_size = randomize_doc_size
-        self.randomize_value = randomize_value
-        self.randomize = randomize
-        self.mix_key_size = mix_key_size
-        self.deep_copy = deep_copy
         self.task_identifier = task_identifier
         self.op_type = "create"
         self.rest_client = BucketHelper(self.cluster.master)
-        self.doc_index = doc_index
+        self.doc_index = self.doc_gen.start
         self.docs_loaded_per_bucket = dict()
         if isinstance(bucket, list):
             self.buckets = bucket
@@ -2028,30 +2012,27 @@ class LoadDocumentsForDgmTask(LoadDocumentsGeneratorsTask):
         Returns a tuple of (active_rr, replica_rr)
         """
         active_resident_items_ratio = self.rest_client.fetch_bucket_stats(
-            bucket.name)["op"]["samples"]["vb_active_resident_items_ratio"][-1]
+            bucket.name)["op"]["samples"][
+            "vb_active_resident_items_ratio"][-1]
         replica_resident_items_ratio = self.rest_client.fetch_bucket_stats(
-            bucket.name)["op"]["samples"]["vb_replica_resident_items_ratio"][-1]
+            bucket.name)["op"]["samples"][
+            "vb_replica_resident_items_ratio"][-1]
         return active_resident_items_ratio, replica_resident_items_ratio
 
     def _load_next_batch_of_docs(self, bucket):
-        doc_gens = list()
+        doc_gens = [deepcopy(self.doc_gen)
+                    for _ in range(self.process_concurrency)]
         doc_tasks = list()
         self.test_log.debug("Doc load from index %d" % self.doc_index)
-        for _ in self.clients:
-            doc_gens.append(doc_generator(
-                self.key, self.doc_index, self.doc_index + self.dgm_batch,
-                key_size=self.key_size, doc_size=self.doc_size,
-                randomize_doc_size=self.randomize_doc_size,
-                randomize_value=self.randomize_value,
-                randomize=self.randomize,
-                mix_key_size=self.mix_key_size,
-                deep_copy=self.deep_copy))
+        for index in range(self.process_concurrency):
+            doc_gens[index].start = self.doc_index
+            doc_gens[index].end = self.doc_index + self.dgm_batch
             self.doc_index += self.dgm_batch
             self.docs_loaded_per_bucket[bucket] += self.dgm_batch
 
         # Start doc_loading tasks
-        for index, generator in enumerate(doc_gens):
-            batch_gen = BatchedDocumentGenerator(generator, self.batch_size)
+        for index, doc_gen in enumerate(doc_gens):
+            batch_gen = BatchedDocumentGenerator(doc_gen, self.batch_size)
             task = LoadDocumentsTask(
                 self.cluster, bucket, self.clients[index], batch_gen,
                 "create", self.exp,
@@ -5918,15 +5899,13 @@ class CreateDatasetsTask(Task):
                         for collection in \
                                 self.bucket_util.get_active_collections(
                                 bucket, scope.name):
-                            for _ in range(self.ds_per_collection):
-                                self.init_dataset_creation(bucket, scope,
-                                                           collection)
+                            self.init_dataset_creation(
+                                bucket, scope, collection)
                 else:
                     scope = self.bucket_util.get_scope_obj(bucket, "_default")
-                    for _ in range(self.ds_per_collection):
-                        self.init_dataset_creation(
-                            bucket, scope, self.bucket_util.get_collection_obj(
-                                scope, "_default"))
+                    self.init_dataset_creation(
+                        bucket, scope, self.bucket_util.get_collection_obj(
+                            scope, "_default"))
             self.set_result(True)
             self.complete_task()
         except Exception as e:
@@ -5944,65 +5923,70 @@ class CreateDatasetsTask(Task):
         return False
 
     def init_dataset_creation(self, bucket, scope, collection):
-        creation_method = random.choice(self.creation_methods)
-
-        dataverse = None
-        if self.remote_datasets:
-            link_name = random.choice(self.remote_link_objs).full_name
-        else:
-            link_name = None
-
-        name = self.cbas_util.generate_name(name_cardinality=1)
-
-        if creation_method == "enable_cbas_from_kv":
-            enabled_from_KV = True
-            if bucket.name + "." + scope.name in \
-                    self.cbas_util.dataverses.keys():
-                dataverse = self.cbas_util.dataverses[
-                    bucket.name + "." + scope.name]
+        for _ in range(self.ds_per_collection):
+            creation_method = random.choice(self.creation_methods)
+            dataverse = None
+            if self.remote_datasets:
+                link_name = random.choice(self.remote_link_objs).full_name
             else:
-                dataverse = Dataverse(bucket.name + "." + scope.name)
-            name = CBASHelper.format_name(collection.name)
-        else:
-            enabled_from_KV = False
-            dataverses = list(
-                filter(lambda dv: (self.ds_per_dv is None) or (len(
-                    dv.datasets.keys()) < self.ds_per_dv),
-                       self.cbas_util.dataverses.values()))
-            if dataverses:
-                dataverse = random.choice(dataverses)
-            if self.cbas_name_cardinality > 1 and not dataverse:
-                dataverse = Dataverse(self.cbas_util.generate_name(
-                    self.cbas_name_cardinality - 1))
-            elif not dataverse:
-                dataverse = self.cbas_util.get_dataverse_obj("Default")
+                link_name = None
 
-        while self.dataset_present(name, dataverse.name):
-            name = self.cbas_util.generate_name(name_cardinality=1)
-        num_of_items = collection.num_items
+            name = self.cbas_util.generate_name(name_cardinality=1,
+                                                max_length=3,
+                                                fixed_length=True)
 
-        if creation_method == "cbas_collection":
-            dataset_obj = CBAS_Collection(
-                name=name, dataverse_name=dataverse.name, link_name=link_name,
-                dataset_source="internal", dataset_properties={},
-                bucket=bucket, scope=scope, collection=collection,
-                enabled_from_KV=enabled_from_KV, num_of_items=num_of_items)
-        else:
-            dataset_obj = Dataset(
-                name=name, dataverse_name=dataverse.name,
-                dataset_source="internal", dataset_properties={},
-                bucket=bucket, scope=scope, collection=collection,
-                enabled_from_KV=enabled_from_KV, num_of_items=num_of_items,
-                link_name=link_name)
-        if not self.create_dataset(dataset_obj):
-            raise N1QLQueryException(
-                "Could not create dataset " + dataset_obj.name + " on " +
-                dataset_obj.dataverse_name)
-        self.created_datasets.append(dataset_obj)
-        if dataverse.name not in self.cbas_util.dataverses.keys():
-            self.cbas_util.dataverses[dataverse.name] = dataverse
-        self.cbas_util.dataverses[dataverse.name].datasets[
-            self.created_datasets[-1].full_name] = self.created_datasets[-1]
+            if creation_method == "enable_cbas_from_kv":
+                enabled_from_KV = True
+                if bucket.name + "." + scope.name in \
+                        self.cbas_util.dataverses.keys():
+                    dataverse = self.cbas_util.dataverses[
+                        bucket.name + "." + scope.name]
+                else:
+                    dataverse = Dataverse(bucket.name + "." + scope.name)
+                name = CBASHelper.format_name(collection.name)
+            else:
+                enabled_from_KV = False
+                dataverses = list(
+                    filter(lambda dv: (self.ds_per_dv is None) or (len(
+                        dv.datasets.keys()) < self.ds_per_dv),
+                           self.cbas_util.dataverses.values()))
+                if dataverses:
+                    dataverse = random.choice(dataverses)
+                if self.cbas_name_cardinality > 1 and not dataverse:
+                    dataverse = Dataverse(self.cbas_util.generate_name(
+                        self.cbas_name_cardinality - 1, max_length=3,
+                        fixed_length=True))
+                elif not dataverse:
+                    dataverse = self.cbas_util.get_dataverse_obj("Default")
+
+            while self.dataset_present(name, dataverse.name):
+                name = self.cbas_util.generate_name(name_cardinality=1,
+                                                    max_length=3,
+                                                    fixed_length=True)
+            num_of_items = collection.num_items
+
+            if creation_method == "cbas_collection":
+                dataset_obj = CBAS_Collection(
+                    name=name, dataverse_name=dataverse.name, link_name=link_name,
+                    dataset_source="internal", dataset_properties={},
+                    bucket=bucket, scope=scope, collection=collection,
+                    enabled_from_KV=enabled_from_KV, num_of_items=num_of_items)
+            else:
+                dataset_obj = Dataset(
+                    name=name, dataverse_name=dataverse.name,
+                    dataset_source="internal", dataset_properties={},
+                    bucket=bucket, scope=scope, collection=collection,
+                    enabled_from_KV=enabled_from_KV, num_of_items=num_of_items,
+                    link_name=link_name)
+            if not self.create_dataset(dataset_obj):
+                raise N1QLQueryException(
+                    "Could not create dataset " + dataset_obj.name + " on " +
+                    dataset_obj.dataverse_name)
+            self.created_datasets.append(dataset_obj)
+            if dataverse.name not in self.cbas_util.dataverses.keys():
+                self.cbas_util.dataverses[dataverse.name] = dataverse
+            self.cbas_util.dataverses[dataverse.name].datasets[
+                self.created_datasets[-1].full_name] = self.created_datasets[-1]
 
     def create_dataset(self, dataset):
         dataverse_name = str(dataset.dataverse_name)
@@ -6046,12 +6030,226 @@ class CreateDatasetsTask(Task):
                     None, None, None, 120, 120, analytics_collection)
 
 
+class CreateSynonymsTask(Task):
+    def __init__(self, cbas_util, cbas_entity, dataverse, synonyms_per_entity=1,
+                 synonym_on_synonym=False, prefix=None):
+        super(CreateSynonymsTask, self).__init__("CreateSynonymsTask")
+        self.cbas_util = cbas_util
+        self.cbas_entity = cbas_entity
+        self.dataverse = dataverse
+        self.synonyms_per_entity = synonyms_per_entity
+        self.synonym_on_synonym = synonym_on_synonym
+        self.prefix = prefix
+
+    def call(self):
+        self.start_task()
+        results = []
+        try:
+            for _ in range(self.synonyms_per_entity):
+                name = self.cbas_util.generate_name(name_cardinality=1,
+                                                    max_length=3,
+                                                    fixed_length=True)
+                while name in \
+                        self.cbas_util.dataverses[
+                            self.dataverse.name].synonyms.keys():
+                    name = self.cbas_util.generate_name(name_cardinality=1,
+                                                        max_length=3,
+                                                        fixed_length=True)
+                synonym = Synonym(
+                    name=name, cbas_entity_name=self.cbas_entity.name,
+                    cbas_entity_dataverse=self.cbas_entity.dataverse_name,
+                    dataverse_name=self.dataverse.name,
+                    synonym_on_synonym=self.synonym_on_synonym)
+                if not self.cbas_util.create_analytics_synonym(
+                        synonym.full_name, synonym.cbas_entity_full_name,
+                        if_not_exists=False, validate_error_msg=False,
+                        expected_error=None, username=None, password=None,
+                        timeout=300, analytics_timeout=300):
+                    results.append(False)
+                else:
+                    self.cbas_util.dataverses[self.cbas_entity.dataverse_name].\
+                        synonyms[synonym.name] = synonym
+                    results.append(True)
+            if not all(results):
+                raise Exception(
+                    "Failed to create all the synonyms on " + \
+                    self.cbas_entity.name)
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
+class CreateCBASIndexesTask(Task):
+    def __init__(self, cbas_util, dataset, indexes_per_dataset=1, prefix=None,
+                 index_fields=[]):
+        super(CreateCBASIndexesTask, self).__init__(
+            "CreateCBASIndexesTask")
+        self.cbas_util = cbas_util
+        self.indexes_per_dataset = indexes_per_dataset
+        self.prefix = prefix
+        if not index_fields:
+            index_fields = ["name:STRING", "age:BIGINT", "body:STRING",
+                            "mutation_type:STRING", "mutated:BIGINT"]
+        self.index_fields = index_fields
+        self.creation_methods = ["cbas_index", "index"]
+        self.dataset = dataset
+
+    def call(self):
+        self.start_task()
+        try:
+            for i in range(self.indexes_per_dataset):
+
+                name = self.cbas_util.generate_name(name_cardinality=1,
+                                                    max_length=3,
+                                                    fixed_length=True)
+                index = CBAS_Index(name=name, dataset_name=self.dataset.name,
+                                   dataverse_name=self.dataset.dataverse_name,
+                                   indexed_fields=random.choice(
+                                       self.index_fields))
+
+                creation_method = random.choice(self.creation_methods)
+                if creation_method == "cbas_index":
+                    index.analytics_index = True
+                else:
+                    index.analytics_index = False
+                if not self.cbas_util.create_cbas_index(
+                        index_name=index.name,
+                        indexed_fields=index.indexed_fields,
+                        dataset_name=index.full_dataset_name,
+                        analytics_index=index.analytics_index,
+                        validate_error_msg=False, expected_error=None,
+                        username=None, password=None, timeout=300,
+                        analytics_timeout=300):
+                    raise Exception(
+                        "Failed to create index {0} on {1}({2})".format(
+                            index.name, index.full_dataset_name,
+                            str(index.indexed_fields)))
+                self.cbas_util.dataverses[
+                    self.dataset.dataverse_name].datasets[
+                    self.dataset.full_name].indexes[index.name] = index
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
+class CreateUDFTask(Task):
+    def __init__(self, cbas_util, udf, dataverse, body, referenced_entities=[],
+                 parameters=[]):
+        super(CreateUDFTask, self).__init__("CreateUDFTask")
+        self.cbas_util = cbas_util
+        self.dataverse = dataverse
+        self.body = body
+        self.udf = udf
+        self.referenced_entities = referenced_entities
+        self.parameters = parameters
+
+    def call(self):
+        self.start_task()
+        try:
+            if not self.cbas_util.create_udf(
+                    name=self.udf, dataverse=self.dataverse.name,
+                    or_replace=False, parameters=self.parameters,
+                    body=self.body,
+                    if_not_exists=False, query_context=False,
+                    use_statement=False, validate_error_msg=False,
+                    expected_error=None, username=None, password=None,
+                    timeout=120, analytics_timeout=120):
+                raise Exception(
+                    "Couldn't create UDF {0} on dataverse {1}: def :{2}".format(
+                        self.udf, self.dataverse.name, self.body))
+            udf_obj = CBAS_UDF(
+                name=self.udf,
+                dataverse_name=self.dataverse.name, parameters=[],
+                body=self.body, referenced_entities=self.referenced_entities)
+            self.cbas_util.dataverses[
+                self.dataverse.name].udfs[udf_obj.full_name] = udf_obj
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
+class DropUDFTask(Task):
+    def __init__(self, cbas_util, dataverse):
+        super(DropUDFTask, self).__init__("DropUDFTask")
+        self.cbas_util = cbas_util
+        self.dataverse = dataverse
+
+    def call(self):
+        self.start_task()
+        try:
+            for udf in self.dataverse.udfs.values():
+                if not self.cbas_util.drop_udf(
+                        name=udf.name, dataverse=self.dataverse.name,
+                        parameters=udf.parameters, if_exists=False,
+                        use_statement=False, query_context=False,
+                        validate_error_msg=False, expected_error=None,
+                        username=None, password=None, timeout=120,
+                        analytics_timeout=120):
+                    raise Exception("Could not drop {0} on {1}: def :".format(
+                        udf.name, self.dataverse.name, udf.body))
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
+class DropCBASIndexesTask(Task):
+    def __init__(self, cbas_util, dataset):
+        super(DropCBASIndexesTask, self).__init__("DropCBASIndexesTask")
+        self.cbas_util = cbas_util
+        self.dataset = dataset
+
+    def call(self):
+        self.start_task()
+        try:
+            for index in self.dataset.indexes.values():
+                if not self.cbas_util.drop_cbas_index(
+                        index_name=index.name,
+                        dataset_name=index.full_dataset_name,
+                        analytics_index=index.analytics_index,
+                        timeout=120, analytics_timeout=120):
+                    raise Exception("Failed to drop index {0} on {1}".format(
+                        index.name, index.full_dataset_name))
+                self.cbas_util.dataverses[
+                    self.dataset.dataverse_name].datasets[
+                    self.dataset.full_name].indexes.pop(index.name)
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
+class DropSynonymsTask(Task):
+    def __init__(self, cbas_util):
+        super(DropSynonymsTask, self).__init__("DropSynonymsTask")
+        self.cbas_util = cbas_util
+
+    def call(self):
+        self.start_task()
+        try:
+            for dv_name, dataverse in self.cbas_util.dataverses.items():
+                for synonym in dataverse.synonyms.values():
+                    if not self.cbas_util.drop_analytics_synonym(
+                            synonym_full_name=synonym.full_name, if_exists=True,
+                            timeout=120, analytics_timeout=120):
+                        raise Exception(
+                            "Unable to drop synonym " + synonym.full_name)
+                    self.cbas_util.dataverses[dataverse.name].synonyms.pop(
+                        synonym.name, None)
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
 class DropDatasetsTask(Task):
-    def __init__(self, cbas_util, drop_dataverses=True, kv_name_cardinality=1):
+    def __init__(self, cbas_util, kv_name_cardinality=1):
         super(DropDatasetsTask, self).__init__(
             "DropDatasetsTask")
         self.cbas_util = cbas_util
-        self.drop_dataverses = drop_dataverses
         self.kv_name_cardinality = kv_name_cardinality
 
     def call(self):
@@ -6061,16 +6259,44 @@ class DropDatasetsTask(Task):
                 for ds_name, dataset in dataverse.datasets.items():
                     if dataset.enabled_from_KV:
                         if self.kv_name_cardinality > 1:
-                            self.cbas_util.disable_analytics_from_KV(
-                                dataset.full_kv_entity_name)
+                            if not self.cbas_util.disable_analytics_from_KV(
+                                    dataset.full_kv_entity_name):
+                                raise Exception(
+                                    "Unable to disable analytics on " + \
+                                    dataset.full_kv_entity_name)
                         else:
-                            self.cbas_util.enable_analytics_from_KV(
-                                dataset.get_fully_qualified_kv_entity_name(1))
+                            if not self.cbas_util.disable_analytics_from_KV(
+                                    dataset.get_fully_qualified_kv_entity_name(
+                                        1)):
+                                raise Exception(
+                                    "Unable to disable analytics on " + \
+                                    dataset.get_fully_qualified_kv_entity_name(
+                                        1))
                     else:
-                        self.cbas_util.drop_dataset(dataset.full_name)
+                        if not self.cbas_util.drop_dataset(dataset.full_name):
+                            raise Exception(
+                                "Unable to drop dataset " + dataset.full_name)
                     dataverse.datasets.pop(dataset.full_name)
-                if self.drop_dataverses and dv_name != "Default":
-                    self.cbas_util.drop_dataverse(dv_name)
+        except Exception as e:
+            self.set_exception(e)
+            return
+        self.complete_task()
+
+
+class DropDataversesTask(Task):
+    def __init__(self, cbas_util):
+        super(DropDataversesTask, self).__init__(
+            "DropDataversesTask")
+        self.cbas_util = cbas_util
+
+    def call(self):
+        self.start_task()
+        try:
+            for dataverse in self.cbas_util.dataverses.values():
+                if dataverse.name != "Default":
+                    if not self.cbas_util.drop_dataverse(dataverse.name):
+                        raise Exception(
+                            "Unable to drop dataverse " + dataverse.name)
         except Exception as e:
             self.set_exception(e)
             return
