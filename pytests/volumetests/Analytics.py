@@ -525,6 +525,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -546,6 +547,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -567,6 +569,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -588,6 +591,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -609,6 +613,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -630,6 +635,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -651,6 +657,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -672,6 +679,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -694,6 +702,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -715,6 +724,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -737,6 +747,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -758,6 +769,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -779,6 +791,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -800,6 +813,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -822,6 +836,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
@@ -846,6 +861,7 @@ class volume(BaseTestCase):
                         dataload_task = self.perform_ops_on_all_clusters(
                             "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                     self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                    self.sleep(120, "sleep after rebalance")
                     self.stop_process()
                     if self.data_load_stage == "during":
                         self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
@@ -908,6 +924,7 @@ class volume(BaseTestCase):
                                     rebalance_tasks = self.perform_ops_on_all_clusters(
                                         "rebalance", {"kv_nodes_in":kv_nodes_in, "kv_nodes_out":0, "cbas_nodes_in":cbas_nodes_in, "cbas_nodes_out":0})
                                     self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                                    self.sleep(120, "sleep after rebalance")
                                 self.perform_ops_on_all_clusters("print_bucket_stats")
                                 step_count += 1
                                 self.log.info("Step {0}: Validating doc count in datasets.".format(step_count))
@@ -927,6 +944,7 @@ class volume(BaseTestCase):
                     dataload_task = self.perform_ops_on_all_clusters(
                         "data_load_collection", {"async_load":True, "skip_read_success_results":True})
                 self.assertTrue(all(self.get_tasks_results(rebalance_tasks, True)), "Rebalance Failed")
+                self.sleep(120, "sleep after rebalance")
                 if self.data_load_stage == "during":
                     self.assertTrue(all(self.get_tasks_results(dataload_task, False)), "Doc_loading failed")
                 self.perform_ops_on_all_clusters("data_validation_collection")
