@@ -89,6 +89,7 @@ class UpgradeTests(UpgradeBase):
 
     def post_upgrade_validation(self):
         # rebalance once again to activate CBAS service
+        self.sleep(60, "Sleep before rebalancing to activate CBAS service")
         rest = RestConnection(self.cluster.master)
         otp_nodes = [node.id for node in rest.node_statuses()]
         rest.rebalance(otpNodes=otp_nodes, ejectedNodes=[])
