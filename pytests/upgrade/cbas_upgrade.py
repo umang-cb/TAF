@@ -86,6 +86,19 @@ class UpgradeTests(UpgradeBase):
             self.log.error("Data ingestion did not happen in the datasets")
             return False
         return True
+    
+    def temp_bucket_spec(self):
+        buckets_dict = dict()
+        for i in range(1, self.input.param("num_buckets", 1)+1):
+            buckets_dict["bucket_{0}".format(i)] = {"scopes":{}}
+            for j in range(1, self.input.param("num_scopes", 1)):
+                buckets_dict["bucket_{0}".format(i)]["scopes"]["scopes_{0}".format(j)] = {
+                    "collections":{}}
+                for k in range(1, self.input.param("num_collections", 1)):
+                    buckets_dict["bucket_{0}".format(i)]["scopes"][
+                        "scopes_{0}".format(j)]["collections"][
+                            "collection_{0}".format(k)] = {}
+        return buckets_dict
 
     def post_upgrade_validation(self):
         # rebalance once again to activate CBAS service
@@ -238,6 +251,7 @@ class UpgradeTests(UpgradeBase):
             "bucket_spec", "analytics.default")
         self.buckets_spec = self.bucket_util.get_bucket_template_from_package(
             self.bucket_spec_name)
+        self.buckets_spec["buckets"] = self.temp_bucket_spec()
         self.doc_spec_name = self.input.param("doc_spec", "initial_load")
         self.collectionSetUp(True, self.buckets_spec)
 
